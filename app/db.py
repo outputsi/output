@@ -1,10 +1,12 @@
+"""Storage layer. Uses Postgres when DATABASE_URL is set, else local SQLite."""
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 DB_PATH = os.environ.get("NET_OUTPUT_DB", "net_output.db")
 
-SCHEMA = """
+SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     person_id TEXT NOT NULL,
@@ -18,47 +20,129 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 """
 
+PG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS entries (
+    id SERIAL PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    source TEXT NOT NULL,
+    scale DOUBLE PRECISION NOT NULL,
+    direction INTEGER NOT NULL CHECK (direction IN (1, -1)),
+    created_at TIMESTAMP NOT NULL,
+    reviewed_at TIMESTAMP NULL,
+    reviewer_id TEXT NULL
+);
+"""
+
+
+def database_url():
+    url = os.environ.get("DATABASE_URL")
+    if url and url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return url or None
+
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
+def _row(r):
+    if r is None:
+        return None
+    d = dict(r)
+    for k, v in d.items():
+        if isinstance(v, datetime):
+            d[k] = v.isoformat()
+    return d
+
+
+@contextmanager
 def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute(SCHEMA)
-    return conn
+    """Yields (cursor, placeholder). Commits on success, always closes."""
+    url = database_url()
+    if url:
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(url)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        ph = "%s"
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        ph = "?"
+    try:
+        yield cur, ph
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _q(sql, ph):
+    return sql.replace("?", ph)
+
+
+_initialized = set()
+
+
+def init():
+    """Create the table if missing. Safe to call repeatedly."""
+    key = database_url() or DB_PATH
+    with connect() as (cur, ph):
+        cur.execute(PG_SCHEMA if ph == "%s" else SQLITE_SCHEMA)
+    _initialized.add(key)
+
+
+def _ensure():
+    if (database_url() or DB_PATH) not in _initialized:
+        init()
 
 
 def insert_entry(person_id, action, source, scale, direction):
-    with connect() as c:
-        cur = c.execute(
-            "INSERT INTO entries (person_id, action, source, scale, direction, created_at) VALUES (?,?,?,?,?,?)",
-            (person_id, action, source, scale, direction, now()),
-        )
-        return get_entry(cur.lastrowid, c)
+    _ensure()
+    with connect() as (cur, ph):
+        sql = "INSERT INTO entries (person_id, action, source, scale, direction, created_at) VALUES (?,?,?,?,?,?)"
+        params = (person_id, action, source, scale, direction, now())
+        if ph == "%s":
+            cur.execute(_q(sql + " RETURNING id", ph), params)
+            new_id = cur.fetchone()["id"]
+        else:
+            cur.execute(sql, params)
+            new_id = cur.lastrowid
+        cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (new_id,))
+        return _row(cur.fetchone())
 
 
-def get_entry(entry_id, c=None):
-    c = c or connect()
-    r = c.execute("SELECT * FROM entries WHERE id=?", (entry_id,)).fetchone()
-    return dict(r) if r else None
+def get_entry(entry_id):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
+        return _row(cur.fetchone())
 
 
 def approve_entry(entry_id, reviewer_id):
-    with connect() as c:
-        c.execute(
-            "UPDATE entries SET reviewed_at=?, reviewer_id=? WHERE id=? AND reviewed_at IS NULL",
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(
+            _q("UPDATE entries SET reviewed_at=?, reviewer_id=? WHERE id=? AND reviewed_at IS NULL", ph),
             (now(), reviewer_id, entry_id),
         )
-        return get_entry(entry_id, c)
+        cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
+        return _row(cur.fetchone())
 
 
 def queue():
-    c = connect()
-    return [dict(r) for r in c.execute("SELECT * FROM entries WHERE reviewed_at IS NULL ORDER BY id")]
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT * FROM entries WHERE reviewed_at IS NULL ORDER BY id")
+        return [_row(r) for r in cur.fetchall()]
 
 
 def person_entries(person_id):
-    c = connect()
-    return [dict(r) for r in c.execute("SELECT * FROM entries WHERE person_id=? ORDER BY id", (person_id,))]
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("SELECT * FROM entries WHERE person_id=? ORDER BY id", ph), (person_id,))
+        return [_row(r) for r in cur.fetchall()]

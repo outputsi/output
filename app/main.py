@@ -14,6 +14,11 @@ from .scoring import score
 app = FastAPI(title="Output")
 
 
+@app.on_event("startup")
+def _startup():
+    db.init()
+
+
 class EntryIn(BaseModel):
     person_id: str = Field(min_length=1)
     action: str = Field(min_length=1)

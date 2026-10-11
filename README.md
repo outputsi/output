@@ -44,6 +44,10 @@ Totals are computed on every read, so approval is reflected immediately.
 ```
 pip install -r requirements.txt
 uvicorn app.main:app --reload
-# DB file: net_output.db (override with NET_OUTPUT_DB=/path/to.db)
+# Without DATABASE_URL: local SQLite file net_output.db (override with NET_OUTPUT_DB=/path/to.db)
 pytest
 ```
+
+## Database
+
+If `DATABASE_URL` is set (e.g. Render's `postgres://user:pass@host:5432/db`; `postgres://` and `postgresql://` both accepted), the app uses Postgres via psycopg2. If it is unset, it falls back to a local SQLite file. The `entries` table is created automatically on startup with the same schema in both (Postgres: `SERIAL` id, `DOUBLE PRECISION` scale).
