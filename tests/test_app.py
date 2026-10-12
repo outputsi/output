@@ -218,5 +218,5 @@ def test_pct_display(client):
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
     assert client.get("/api/people/nobody").json()["positive_pct"] is None
     h = client.get("/").text
-    assert "9,237.5 · 100% positive" in h and "0 · \u2014 positive" in h
+    assert '<div class="net">100%</div>' in h and '<div class="net">\u2014</div>' in h and "9,237.5" not in h
     assert "Positive share: 100%" in client.get("/people/jonas-salk").text

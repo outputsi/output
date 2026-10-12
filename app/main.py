@@ -170,7 +170,7 @@ def ui_home():
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}" data-person="{pid}">{av}'
-                     f'<div class="name">{escape(p["name"])}</div><div class="net">{p["net"]:,.10g} · {fmt_pct(p["positive_pct"])} positive</div></a>')
+                     f'<div class="name">{escape(p["name"])}</div><div class="net">{fmt_pct(p["positive_pct"])}</div></a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
