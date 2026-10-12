@@ -184,7 +184,7 @@ def test_home_placeholder_initials(client):
 def test_set_person_image(client):
     _approve(client, person_id="jonas-salk")
     r = client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg"})
-    assert r.status_code == 200 and r.json() == {"person_id": "jonas-salk", "image_url": "https://img.example/js.jpg"}
+    assert r.status_code == 200 and r.json()["image_url"] == "https://img.example/js.jpg"
     client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/2.jpg"})
     h = client.get("/").text
     assert '<img class="avatar" src="https://img.example/2.jpg"' in h and "avatar placeholder" not in h
@@ -335,3 +335,20 @@ def test_credit_migration_keeps_scores(tmp_path, monkeypatch):
     e1 = db.get_entry(1)
     assert (e1["credit_share"], e1["credit_basis"], e1["credit_note"], e1["is_estimate"]) == (1.0, "direct", None, 0)
     assert score(db.person_entries("p"))["net"] == 9237.5
+
+
+def test_person_image_credit(client):
+    _approve(client, person_id="jonas-salk")
+    r = client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg",
+                    "image_credit": "Jane <Doe>", "image_license_url": "https://creativecommons.org/licenses/by-sa/3.0"})
+    assert r.json()["image_credit"] == "Jane <Doe>"
+    h = client.get("/people/jonas-salk").text
+    assert 'class="photo-credit"' in h and "Photo: Jane &lt;Doe&gt;" in h
+    assert 'href="https://creativecommons.org/licenses/by-sa/3.0"' in h
+
+
+def test_person_page_no_credit_line(client):
+    _approve(client, person_id="jonas-salk")
+    client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg"})
+    h = client.get("/people/jonas-salk").text
+    assert '<img src="https://img.example/js.jpg"' in h and "photo-credit" not in h

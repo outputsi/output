@@ -119,6 +119,12 @@ def init():
         pg = ph == "%s"
         cur.execute(PG_SCHEMA if pg else SQLITE_SCHEMA)
         cur.execute(PEOPLE_SCHEMA)
+        # Optional photo credit columns on people.
+        for name in ("image_credit", "image_license_url"):
+            if pg:
+                cur.execute(f"ALTER TABLE people ADD COLUMN IF NOT EXISTS {name} TEXT NULL")
+            elif name not in [r[1] for r in cur.execute("PRAGMA table_info(people)").fetchall()]:
+                cur.execute(f"ALTER TABLE people ADD COLUMN {name} TEXT NULL")
         # Migrate tables created before the status column existed.
         if pg:
             cur.execute(f"ALTER TABLE entries ADD COLUMN IF NOT EXISTS status {STATUS_DDL}")
@@ -220,15 +226,26 @@ def people_images():
         return {r["person_id"]: r["image_url"] for r in cur.fetchall()}
 
 
-def set_person_image(person_id, image_url):
+def get_person(person_id):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("SELECT person_id, image_url, image_credit, image_license_url FROM people WHERE person_id=?", ph),
+                    (person_id,))
+        r = cur.fetchone()
+        return _row(r) if r else None
+
+
+def set_person_image(person_id, image_url, image_credit=None, image_license_url=None):
     _ensure()
     with connect() as (cur, ph):
         cur.execute(
-            _q("INSERT INTO people (person_id, image_url) VALUES (?, ?) "
-               "ON CONFLICT (person_id) DO UPDATE SET image_url = excluded.image_url", ph),
-            (person_id, image_url),
+            _q("INSERT INTO people (person_id, image_url, image_credit, image_license_url) VALUES (?, ?, ?, ?) "
+               "ON CONFLICT (person_id) DO UPDATE SET image_url = excluded.image_url, "
+               "image_credit = excluded.image_credit, image_license_url = excluded.image_license_url", ph),
+            (person_id, image_url, image_credit, image_license_url),
         )
-        cur.execute(_q("SELECT person_id, image_url FROM people WHERE person_id=?", ph), (person_id,))
+        cur.execute(_q("SELECT person_id, image_url, image_credit, image_license_url FROM people WHERE person_id=?", ph),
+                    (person_id,))
         return _row(cur.fetchone())
 
 

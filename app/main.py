@@ -136,6 +136,8 @@ def link(src):
 
 class ImageIn(BaseModel):
     image_url: str | None = None
+    image_credit: str | None = None
+    image_license_url: str | None = None
 
 
 def pretty(person_id):
@@ -164,7 +166,9 @@ def ranking(include_estimates=False):
 
 @app.post("/api/people/{person_id}/image")
 def api_person_image(person_id: str, body: ImageIn):
-    return db.set_person_image(person_id, (body.image_url or "").strip() or None)
+    clean = lambda v: (v or "").strip() or None
+    return db.set_person_image(person_id, clean(body.image_url), clean(body.image_credit),
+                               clean(body.image_license_url))
 
 
 @app.post("/people-image")
@@ -352,7 +356,16 @@ def ui_person(person_id: str, include_estimates: bool = False):
         f"<td>{e['direction']:+d}</td><td>{escape(e['status'])}</td></tr>"
         for e in v["not_counted"]
     ) or "<tr><td colspan=5>None.</td></tr>"
-    return page(f"Person: {person_id}",
+    photo = ""
+    pr = db.get_person(person_id)
+    if pr and pr["image_url"]:
+        photo = f'<p><img src="{escape(pr["image_url"])}" alt="{pid}" style="width:120px;height:120px;border-radius:50%;object-fit:cover"></p>'
+        if pr["image_credit"] or pr["image_license_url"]:
+            lic = pr["image_license_url"] or ""
+            lic_html = (f' (<a href="{escape(lic)}" target="_blank" rel="noopener">license</a>)'
+                        if lic.startswith(("http://", "https://")) else "")
+            photo += f'<p class="photo-credit" style="font-size:.75em;color:#666;margin-top:-.5em">Photo: {escape(pr["image_credit"] or "")}{lic_html}</p>'
+    return page(f"Person: {person_id}", photo +
                 "<style>.badge{background:#fde68a;color:#78350f;border-radius:4px;padding:1px 6px;font-size:.8em}</style>"
                 f"<p>{toggle}</p>"
                 f"<p><span class='n'>Positive: {v['positive_total']}</span><span class='n'>Negative: {v['negative_total']}</span>"

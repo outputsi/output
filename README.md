@@ -27,6 +27,8 @@ Minimal tracker of net output per person, based on sourced actions. Review is ma
 |---|---|
 | person_id | TEXT PRIMARY KEY |
 | image_url | TEXT NULL |
+| image_credit | TEXT NULL |
+| image_license_url | TEXT NULL |
 
 Used only for homepage avatars; created by `init()`.
 
@@ -57,7 +59,7 @@ Totals are computed on every read, so approval is reflected immediately.
 - `POST /api/entries` — `{person_id, action, source, scale, direction}` → queued (reviewed_at null)
 - `POST /api/entries/{id}/approve` — `{reviewer_id}` → status approved, sets reviewed_at + reviewer_id (only from pending; else 409)
 - `POST /api/entries/{id}/mark-unproven` — `{reviewer_id}` → status unproven, sets reviewed_at + reviewer_id (from pending or approved — an approved entry drops out of the totals; 404 unknown, 409 if already unproven/rejected). Source/scale/direction are kept but never counted.
-- `POST /api/people/{person_id}/image` — `{image_url}` (null/empty clears) → sets the avatar image in `people`
+- `POST /api/people/{person_id}/image` — `{image_url, image_credit?, image_license_url?}` (null/empty clears) → sets the avatar image and optional photo credit in `people`; credit shown as a small line under the photo on the person page
 - `GET /api/queue` — pending entries (status = pending)
 - `GET /api/people/{person_id}` — positive_total, negative_total, net, approved entries with sources (`entries`), plus `not_counted` (unproven/rejected)
 
