@@ -50,6 +50,8 @@ Used only for homepage avatars; created by `init()`.
 4. When sources disagree, use the lowest shared/documented number, with a note.
 5. Otherwise the entry is unproven, with all sources shown.
 
+Money counts only through the number of people a source says it affected.
+
 Very trusted = peer-reviewed journals, government/official bodies and inquiries, national archives, major museums/memorials, university presses, Nobel, main Britannica, major newspapers of record.
 
 ## Scoring (pure function `app/scoring.py`, no stored totals)
