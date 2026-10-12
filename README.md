@@ -60,6 +60,7 @@ Totals are computed on every read, so approval is reflected immediately.
 - `POST /api/entries/{id}/approve` — `{reviewer_id}` → status approved, sets reviewed_at + reviewer_id (only from pending; else 409)
 - `POST /api/entries/{id}/mark-unproven` — `{reviewer_id}` → status unproven, sets reviewed_at + reviewer_id (from pending or approved — an approved entry drops out of the totals; 404 unknown, 409 if already unproven/rejected). Source/scale/direction are kept but never counted.
 - `POST /api/people/{person_id}/image` — `{image_url, image_credit?, image_license_url?}` (null/empty clears) → sets the avatar image and optional photo credit in `people`; credit shown as a small line under the photo on the person page
+- `POST /api/entries/{id}/sources` — `{url, quote?, reviewer_id, make_primary?}` → attaches an additional source (table `entry_sources`); `make_primary: true` replaces the entry's main `source` instead. `GET /api/entries/{id}/sources` lists them. Extra sources are shown on the person page and queue; scoring and statuses are unaffected.
 - `GET /api/queue` — pending entries (status = pending)
 - `GET /api/people/{person_id}` — positive_total, negative_total, net, approved entries with sources (`entries`), plus `not_counted` (unproven/rejected)
 

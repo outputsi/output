@@ -51,8 +51,15 @@ def _decorate(e):
     return e
 
 
+def _with_sources(entries):
+    extra = db.entry_sources({e["id"] for e in entries})
+    for e in entries:
+        e["extra_sources"] = extra.get(e["id"], [])
+    return entries
+
+
 def person_view(person_id, include_estimates=False):
-    entries = [_decorate(e) for e in db.person_entries(person_id)]
+    entries = _with_sources([_decorate(e) for e in db.person_entries(person_id)])
     approved = [e for e in entries if e["status"] == "approved"]
     counted = [e for e in approved if include_estimates or not e["is_estimate"]]
     estimates = [e for e in approved if e["is_estimate"] and not include_estimates]
@@ -107,9 +114,33 @@ def api_credit(entry_id: int, body: CreditIn):
                             body.is_estimate, body.reviewer_id)
 
 
+class SourceIn(BaseModel):
+    url: str = Field(min_length=1)
+    quote: str | None = None
+    reviewer_id: str = Field(min_length=1)
+    make_primary: bool = False
+
+
+@app.post("/api/entries/{entry_id}/sources", status_code=201)
+def api_add_source(entry_id: int, body: SourceIn):
+    if not db.get_entry(entry_id):
+        raise HTTPException(404, "entry not found")
+    e = db.add_entry_source(entry_id, body.url.strip(), (body.quote or "").strip() or None,
+                            body.reviewer_id, body.make_primary)
+    return _with_sources([dict(e)])[0]
+
+
+@app.get("/api/entries/{entry_id}/sources")
+def api_list_sources(entry_id: int):
+    e = db.get_entry(entry_id)
+    if not e:
+        raise HTTPException(404, "entry not found")
+    return {"entry_id": entry_id, "source": e["source"], "extra_sources": db.entry_sources({entry_id}).get(entry_id, [])}
+
+
 @app.get("/api/queue")
 def api_queue():
-    return db.queue()
+    return _with_sources([dict(e) for e in db.queue()])
 
 
 @app.get("/api/people/{person_id}")
@@ -125,6 +156,14 @@ td,th{{border:1px solid #ccc;padding:4px;text-align:left}}.n{{font-size:1.4em;ma
 <body><nav><a href="/">Home</a> | <a href="/submit">Submit</a> | <a href="/queue">Queue</a> |
 <form style="display:inline" action="/person"><input name="person_id" placeholder="person_id"><button>View person</button></form></nav>
 <h1>{escape(title)}</h1>{body}</body></html>""")
+
+
+def sources_cell(e):
+    out = link(e["source"])
+    for x in e.get("extra_sources") or []:
+        q = f" <small>“{escape(x['quote'])}”</small>" if x.get("quote") else ""
+        out += f"<br><span class='extra-source'>+ {link(x['url'])}{q}</span>"
+    return out
 
 
 def link(src):
@@ -295,12 +334,12 @@ async def ui_import(json_text: str = Form(""), csv_file: UploadFile | None = Fil
 def ui_queue():
     rows = "".join(
         f"<tr><td>{e['id']}</td><td>{escape(e['person_id'])}</td><td>{escape(e['action'])}</td>"
-        f"<td>{link(e['source'])}</td><td>{e['scale']}</td><td>{e['direction']:+d}</td><td>{e['created_at']}</td>"
+        f"<td>{sources_cell(e)}</td><td>{e['scale']}</td><td>{e['direction']:+d}</td><td>{e['created_at']}</td>"
         f"<td><form method='post' action='/queue/{e['id']}/approve'><input name='reviewer_id' placeholder='reviewer_id' required>"
         f"<button>Approve</button></form>"
         f"<form method='post' action='/queue/{e['id']}/mark-unproven'><input name='reviewer_id' placeholder='reviewer_id' required>"
         f"<button>Mark unproven</button></form></td></tr>"
-        for e in db.queue()
+        for e in _with_sources([dict(e) for e in db.queue()])
     ) or "<tr><td colspan=8>Queue is empty.</td></tr>"
     return page("Review queue", "<table><tr><th>id</th><th>person</th><th>action</th><th>source</th><th>scale</th>"
                 f"<th>dir</th><th>created_at</th><th>review</th></tr>{rows}</table>")
@@ -336,7 +375,7 @@ def ui_person(person_id: str, include_estimates: bool = False):
     toggle = (f"<a href='/people/{pid}'>Exclude estimates</a>" if include_estimates
               else f"<a href='/people/{pid}?include_estimates=1'>Include estimates</a>")
     rows = "".join(
-        f"<tr><td>{escape(e['action'])}</td><td>{link(e['source'])}</td><td>{e['scale']}</td>"
+        f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
         f"<td>{_credit_cell(e)}</td><td>{e['effective_scale']:g}</td>"
         f"<td>{e['direction']:+d}</td><td>{e['reviewed_at']}</td><td>{escape(e['reviewer_id'] or '')}</td></tr>"
         for e in v["entries"]
@@ -344,7 +383,7 @@ def ui_person(person_id: str, include_estimates: bool = False):
     est = ""
     if v["estimates"]:
         est_rows = "".join(
-            f"<tr><td>{escape(e['action'])}</td><td>{link(e['source'])}</td><td>{e['scale']}</td>"
+            f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
             f"<td>{_credit_cell(e)}</td><td>{e['effective_scale']:g}</td><td>{e['direction']:+d}</td></tr>"
             for e in v["estimates"]
         )
@@ -352,7 +391,7 @@ def ui_person(person_id: str, include_estimates: bool = False):
                "<table style='color:#666'><tr><th>action</th><th>source</th><th>scale</th><th>credit</th><th>effective</th><th>dir</th></tr>"
                f"{est_rows}</table>")
     nc = "".join(
-        f"<tr><td>{escape(e['action'])}</td><td>{link(e['source'])}</td><td>{e['scale']}</td>"
+        f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
         f"<td>{e['direction']:+d}</td><td>{escape(e['status'])}</td></tr>"
         for e in v["not_counted"]
     ) or "<tr><td colspan=5>None.</td></tr>"

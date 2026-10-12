@@ -145,6 +145,12 @@ def init():
         cur.execute("UPDATE entries SET credit_share=1.0 WHERE credit_share IS NULL")
         cur.execute("UPDATE entries SET credit_basis='direct' WHERE credit_basis IS NULL")
         cur.execute("UPDATE entries SET is_estimate=0 WHERE is_estimate IS NULL")
+        # Additional sources per entry.
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS entry_sources ("
+            + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
+            + ", entry_id INTEGER NOT NULL, url TEXT NOT NULL, quote TEXT NULL, "
+            "added_by TEXT NULL, added_at TEXT NOT NULL)")
     _initialized.add(key)
 
 
@@ -259,3 +265,28 @@ def update_credit(entry_id, credit_share, credit_basis, credit_note, is_estimate
         )
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
         return _row(cur.fetchone())
+
+
+def add_entry_source(entry_id, url, quote, added_by, make_primary=False):
+    """Attach an extra source; with make_primary, the URL replaces entries.source instead."""
+    _ensure()
+    with connect() as (cur, ph):
+        if make_primary:
+            cur.execute(_q("UPDATE entries SET source=? WHERE id=?", ph), (url, entry_id))
+        else:
+            cur.execute(_q("INSERT INTO entry_sources (entry_id, url, quote, added_by, added_at) VALUES (?,?,?,?,?)", ph),
+                        (entry_id, url, quote, added_by, now()))
+    return get_entry(entry_id)
+
+
+def entry_sources(entry_ids=None):
+    """Map entry_id -> list of extra sources."""
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT id, entry_id, url, quote, added_by, added_at FROM entry_sources ORDER BY id")
+        out = {}
+        for r in cur.fetchall():
+            r = _row(r)
+            if entry_ids is None or r["entry_id"] in entry_ids:
+                out.setdefault(r["entry_id"], []).append(r)
+        return out

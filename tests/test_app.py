@@ -352,3 +352,23 @@ def test_person_page_no_credit_line(client):
     client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg"})
     h = client.get("/people/jonas-salk").text
     assert '<img src="https://img.example/js.jpg"' in h and "photo-credit" not in h
+
+
+def test_extra_sources(client):
+    i = sub(client, person_id="p1").json()["id"]
+    r = client.post(f"/api/entries/{i}/sources", json={"url": "https://two.example/a", "quote": "said <x>", "reviewer_id": "r"})
+    assert r.status_code == 201 and r.json()["extra_sources"][0]["url"] == "https://two.example/a"
+    assert client.get("/api/queue").json()[0]["extra_sources"][0]["quote"] == "said <x>"
+    assert "https://two.example/a" in client.get("/queue").text and "said &lt;x&gt;" in client.get("/queue").text
+    client.post(f"/api/entries/{i}/approve", json={"reviewer_id": "r"})
+    h = client.get("/people/p1").text
+    assert "extra-source" in h and "https://two.example/a" in h
+    assert client.get("/api/people/p1").json()["positive_total"] == 1
+    assert client.post("/api/entries/999/sources", json={"url": "u", "reviewer_id": "r"}).status_code == 404
+
+
+def test_make_primary_source(client):
+    i = sub(client).json()["id"]
+    r = client.post(f"/api/entries/{i}/sources", json={"url": "https://better.example", "reviewer_id": "r", "make_primary": True})
+    assert r.json()["source"] == "https://better.example" and r.json()["extra_sources"] == []
+    assert client.get(f"/api/entries/{i}/sources").json()["source"] == "https://better.example"
