@@ -188,6 +188,10 @@ def approve_entry(entry_id, reviewer_id):
     return _review(entry_id, reviewer_id, "approved")
 
 
+def approve_unproven(entry_id, reviewer_id):
+    return _review(entry_id, reviewer_id, "approved", ("unproven",))
+
+
 def mark_unproven(entry_id, reviewer_id):
     return _review(entry_id, reviewer_id, "unproven", ("pending", "approved"))
 

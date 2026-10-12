@@ -284,20 +284,33 @@ def test_estimate_toggle_api_and_pages(client):
     _approve(client, person_id="pp", scale=10)
     est = _approve(client, person_id="pp", scale=90, is_estimate=True)
     split = _approve(client, person_id="pp", scale=400, credit_share=0.25, credit_basis="even_split")
-    p = client.get("/api/people/pp").json()
+    p = client.get("/api/people/pp?include_estimates=0").json()
     assert p["net"] == 110 and [x["id"] for x in p["estimates"]] == [est]
     assert est not in [x["id"] for x in p["entries"]]
-    p2 = client.get("/api/people/pp?include_estimates=1").json()
+    p2 = client.get("/api/people/pp").json()
     assert p2["net"] == 200 and p2["estimates"] == [] and est in [x["id"] for x in p2["entries"]]
     assert [x for x in p2["entries"] if x["id"] == split][0]["effective_scale"] == 100
     h = client.get("/people/pp").text
-    assert "Even split 1/4" in h and "Estimates (excluded)" in h and "Estimate</span>" in h
-    assert "include_estimates=1" in h
-    assert "Estimates (excluded)" not in client.get("/people/pp?include_estimates=1").text
+    assert "Even split 1/4" in h and "est.</span>" in h and "Estimates (excluded)" not in h
+    assert "include_estimates=0" in h
+    assert "Estimates (excluded)" in client.get("/people/pp?include_estimates=0").text
     home = client.get("/").text
-    assert 'href="/?include_estimates=1"' in home
-    assert 'href="/people/pp?include_estimates=1"' in client.get("/?include_estimates=1").text
+    assert 'href="/?include_estimates=0"' in home and "%" in home
+    assert 'href="/people/pp?include_estimates=0"' in client.get("/?include_estimates=0").text
 
+
+def test_approve_unproven_estimate(client):
+    def mk(est):
+        e = client.post("/api/entries", json={"person_id": "ue", "action": "a", "source": "https://x", "scale": 50,
+                                              "direction": 1, "is_estimate": est}).json()["id"]
+        client.post(f"/api/entries/{e}/mark-unproven", json={"reviewer_id": "r"})
+        return e
+    e, n = mk(True), mk(False)
+    r = client.post(f"/api/entries/{e}/approve-estimate", json={"reviewer_id": "r"})
+    assert r.status_code == 200 and r.json()["status"] == "approved"
+    assert client.post(f"/api/entries/{n}/approve-estimate", json={"reviewer_id": "r"}).status_code == 409
+    assert client.post(f"/api/entries/{e}/approve-estimate", json={"reviewer_id": "r"}).status_code == 409
+    assert client.get("/api/people/ue").json()["net"] == 50
 
 def test_credit_endpoint(client):
     i = _approve(client, person_id="cc", scale=100)
@@ -307,7 +320,7 @@ def test_credit_endpoint(client):
     assert r.status_code == 200 and r.json()["credit_share"] == 0.6 and r.json()["reviewer_id"] == "many"
     assert client.get("/api/people/cc").json()["net"] == pytest.approx(60)
     client.post(f"/api/entries/{i}/credit", json={"credit_share": 1, "credit_basis": "direct", "is_estimate": True, "reviewer_id": "m"})
-    assert client.get("/api/people/cc").json()["net"] == 0
+    assert client.get("/api/people/cc?include_estimates=0").json()["net"] == 0
     assert client.post("/api/entries/999/credit", json={"credit_share": 1, "credit_basis": "direct", "reviewer_id": "m"}).status_code == 404
     assert client.post(f"/api/entries/{i}/credit", json={"credit_share": 2, "credit_basis": "direct", "reviewer_id": "m"}).status_code == 422
 

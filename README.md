@@ -38,7 +38,8 @@ Used only for homepage avatars; created by `init()`.
 - `direct` (default, share 1.0): the person is credited with the whole action.
 - `sourced_share`: a partial share is counted only when the source itself states it (e.g. 60%). Labeled "Sourced share 60%".
 - `even_split`: when no share is stated but the source lists N contributors, use 1/N. Labeled "Even split 1/N".
-- Estimates (`is_estimate` = 1) are labeled and excluded from the score by default; add `?include_estimates=1` to the person page/API or homepage (toggle links provided) to include them.
+- Estimates (`is_estimate` = 1) are labeled "est." and counted in the score by default; add `?include_estimates=0` to the person page/API or homepage (toggle links provided) to exclude them.
+- `POST /api/entries/{id}/approve-estimate` `{reviewer_id}` approves an unproven estimate entry that passes the estimate rule (re-check only).
 - Existing entries are migrated to share 1.0 / direct / not estimate, so earlier scores do not change.
 - `POST /api/entries/{id}/credit` with `{credit_share, credit_basis, credit_note, is_estimate, reviewer_id}` updates these on an existing entry (records reviewer_id).
 
@@ -51,6 +52,8 @@ Used only for homepage avatars; created by `init()`.
 5. Otherwise the entry is unproven, with all sources shown.
 
 Money counts only through the number of people a source says it affected.
+
+Estimates count. An `is_estimate` entry may be approved when 2 independent very trusted sources directly attribute the effect to the individual and give an approximate people count; the lowest stated figure is used (rule 4). Still unproven: no number; effect credited to an organization, company or foundation, or shared with others; counterfactuals or projections; non-people units (beds, gifts, dollars); negatives without a court or official finding.
 
 Very trusted = peer-reviewed journals, government/official bodies and inquiries, national archives, major museums/memorials, university presses, Nobel, main Britannica, major newspapers of record.
 

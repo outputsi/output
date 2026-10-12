@@ -58,7 +58,7 @@ def _with_sources(entries):
     return entries
 
 
-def person_view(person_id, include_estimates=False):
+def person_view(person_id, include_estimates=True):
     entries = _with_sources([_decorate(e) for e in db.person_entries(person_id)])
     approved = [e for e in entries if e["status"] == "approved"]
     counted = [e for e in approved if include_estimates or not e["is_estimate"]]
@@ -99,6 +99,17 @@ def api_submit(entry: EntryIn):
 @app.post("/api/entries/{entry_id}/approve")
 def api_approve(entry_id: int, body: ApproveIn):
     return do_approve(entry_id, body.reviewer_id)
+
+
+@app.post("/api/entries/{entry_id}/approve-estimate")
+def api_approve_estimate(entry_id: int, body: ApproveIn):
+    """Re-check: approve an unproven entry flagged is_estimate (estimate rule)."""
+    e = db.get_entry(entry_id)
+    if not e:
+        raise HTTPException(404, "entry not found")
+    if e["status"] != "unproven" or not e["is_estimate"]:
+        raise HTTPException(409, "only unproven estimate entries can be approved here")
+    return db.approve_unproven(entry_id, body.reviewer_id)
 
 
 @app.post("/api/entries/{entry_id}/mark-unproven")
@@ -144,7 +155,7 @@ def api_queue():
 
 
 @app.get("/api/people/{person_id}")
-def api_person(person_id: str, include_estimates: bool = False):
+def api_person(person_id: str, include_estimates: bool = True):
     return person_view(person_id, include_estimates)
 
 
@@ -188,7 +199,7 @@ def initials(person_id):
     return "".join(w[0] for w in words[:2]).upper() or "?"
 
 
-def ranking(include_estimates=False):
+def ranking(include_estimates=True):
     entries = db.all_entries()
     images = db.people_images()
     by_person = {}
@@ -246,11 +257,11 @@ def share_label(p):
 
 
 @app.get("/", response_class=HTMLResponse)
-def ui_home(include_estimates: bool = False):
+def ui_home(include_estimates: bool = True):
     cards = []
-    q = "?include_estimates=1" if include_estimates else ""
-    toggle = ('<a href="/">Exclude estimates</a>' if include_estimates
-              else '<a href="/?include_estimates=1">Include estimates</a>')
+    q = "" if include_estimates else "?include_estimates=0"
+    toggle = ('<a href="/?include_estimates=0">Exclude estimates</a>' if include_estimates
+              else '<a href="/">Include estimates</a>')
     for p in ranking(include_estimates):
         pid = escape(p["person_id"])
         if p["image_url"]:
@@ -363,17 +374,17 @@ def ui_person_lookup(person_id: str):
 
 
 def _credit_cell(e):
-    badge = " <span class='badge'>Estimate</span>" if e["is_estimate"] else ""
+    badge = " <span class='badge'>est.</span>" if e["is_estimate"] else ""
     note = f"<br><small>{escape(e['credit_note'])}</small>" if e.get("credit_note") else ""
     return f"{escape(e['credit_label'])}{badge}{note}"
 
 
 @app.get("/people/{person_id}", response_class=HTMLResponse)
-def ui_person(person_id: str, include_estimates: bool = False):
+def ui_person(person_id: str, include_estimates: bool = True):
     v = person_view(person_id, include_estimates)
     pid = escape(person_id)
-    toggle = (f"<a href='/people/{pid}'>Exclude estimates</a>" if include_estimates
-              else f"<a href='/people/{pid}?include_estimates=1'>Include estimates</a>")
+    toggle = (f"<a href='/people/{pid}?include_estimates=0'>Exclude estimates</a>" if include_estimates
+              else f"<a href='/people/{pid}'>Include estimates</a>")
     rows = "".join(
         f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
         f"<td>{_credit_cell(e)}</td><td>{e['effective_scale']:g}</td>"
