@@ -237,3 +237,101 @@ def test_home_90_10_bar(client):
     assert client.get("/api/people/mixed").json()["negative_pct"] == pytest.approx(10)
     h = client.get("/").text
     assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
+
+
+# ---------- credit sharing ----------
+from app.scoring import credit_label
+
+
+def test_share_math():
+    es = [dict(e(100, 1), credit_share=0.6), dict(e(10, -1), credit_share=0.5), e(5, 1)]
+    r = score(es)
+    assert r["positive_total"] == pytest.approx(65) and r["negative_total"] == pytest.approx(5)
+    assert r["net"] == pytest.approx(60) and r["positive_pct"] == pytest.approx(65 / 70 * 100)
+
+
+def test_missing_share_defaults_to_one():
+    assert score([dict(e(7, 1), credit_share=None)])["net"] == 7
+
+
+def test_even_split_and_labels():
+    x = dict(e(400, 1), credit_share=0.25, credit_basis="even_split")
+    assert score([x])["net"] == pytest.approx(100)
+    assert credit_label(x) == "Even split 1/4"
+    assert credit_label(dict(x, credit_share=0.6, credit_basis="sourced_share")) == "Sourced share 60%"
+    assert credit_label(e(1, 1)) == "Direct"
+
+
+def test_estimate_excluded_by_default_pure():
+    es = [e(10, 1), dict(e(90, 1), is_estimate=1)]
+    assert score(es)["net"] == 10
+    assert score(es, include_estimates=True)["net"] == 100
+
+
+def test_submit_credit_fields_and_validation(client):
+    r = sub(client, scale=400, credit_share=0.25, credit_basis="even_split", credit_note="Source lists 4 contributors")
+    assert r.status_code == 201
+    j = r.json()
+    assert (j["credit_share"], j["credit_basis"], j["credit_note"], j["is_estimate"]) == (0.25, "even_split", "Source lists 4 contributors", 0)
+    d = sub(client).json()
+    assert (d["credit_share"], d["credit_basis"], d["is_estimate"]) == (1.0, "direct", 0)
+    assert sub(client, credit_share=0).status_code == 422
+    assert sub(client, credit_share=1.5).status_code == 422
+    assert sub(client, credit_basis="vibes").status_code == 422
+
+
+def test_estimate_toggle_api_and_pages(client):
+    _approve(client, person_id="pp", scale=10)
+    est = _approve(client, person_id="pp", scale=90, is_estimate=True)
+    split = _approve(client, person_id="pp", scale=400, credit_share=0.25, credit_basis="even_split")
+    p = client.get("/api/people/pp").json()
+    assert p["net"] == 110 and [x["id"] for x in p["estimates"]] == [est]
+    assert est not in [x["id"] for x in p["entries"]]
+    p2 = client.get("/api/people/pp?include_estimates=1").json()
+    assert p2["net"] == 200 and p2["estimates"] == [] and est in [x["id"] for x in p2["entries"]]
+    assert [x for x in p2["entries"] if x["id"] == split][0]["effective_scale"] == 100
+    h = client.get("/people/pp").text
+    assert "Even split 1/4" in h and "Estimates (excluded)" in h and "Estimate</span>" in h
+    assert "include_estimates=1" in h
+    assert "Estimates (excluded)" not in client.get("/people/pp?include_estimates=1").text
+    home = client.get("/").text
+    assert 'href="/?include_estimates=1"' in home
+    assert 'href="/people/pp?include_estimates=1"' in client.get("/?include_estimates=1").text
+
+
+def test_credit_endpoint(client):
+    i = _approve(client, person_id="cc", scale=100)
+    r = client.post(f"/api/entries/{i}/credit", json={"credit_share": 0.6, "credit_basis": "sourced_share",
+                                                      "credit_note": "Paper credits 60%", "is_estimate": False,
+                                                      "reviewer_id": "many"})
+    assert r.status_code == 200 and r.json()["credit_share"] == 0.6 and r.json()["reviewer_id"] == "many"
+    assert client.get("/api/people/cc").json()["net"] == pytest.approx(60)
+    client.post(f"/api/entries/{i}/credit", json={"credit_share": 1, "credit_basis": "direct", "is_estimate": True, "reviewer_id": "m"})
+    assert client.get("/api/people/cc").json()["net"] == 0
+    assert client.post("/api/entries/999/credit", json={"credit_share": 1, "credit_basis": "direct", "reviewer_id": "m"}).status_code == 404
+    assert client.post(f"/api/entries/{i}/credit", json={"credit_share": 2, "credit_basis": "direct", "reviewer_id": "m"}).status_code == 422
+
+
+def test_ui_submit_and_import_credit(client):
+    client.post("/submit", data={"person_id": "u", "action": "a", "source": "s", "scale": "8", "direction": "1",
+                                 "credit_share": "0.5", "credit_basis": "sourced_share", "credit_note": "", "is_estimate": "1"})
+    client.post("/import", files={"csv_file": ("x.csv", b"person_id,action,source,scale,direction,credit_share,credit_basis\nu,c,s,4,1,0.25,even_split\nu,d,s,1,1,,\n", "text/csv")})
+    q = client.get("/api/queue").json()
+    assert [(x["credit_share"], x["credit_basis"], x["is_estimate"]) for x in q] == [(0.5, "sourced_share", 1), (0.25, "even_split", 0), (1.0, "direct", 0)]
+
+
+def test_credit_migration_keeps_scores(tmp_path, monkeypatch):
+    import sqlite3
+    from app import db
+    path = str(tmp_path / "old2.db")
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, person_id TEXT NOT NULL, action TEXT NOT NULL, "
+              "source TEXT NOT NULL, scale REAL NOT NULL, direction INTEGER NOT NULL, created_at TIMESTAMP NOT NULL, "
+              "reviewed_at TIMESTAMP NULL, reviewer_id TEXT NULL, status TEXT NOT NULL DEFAULT 'pending')")
+    c.execute("INSERT INTO entries VALUES (1,'p','a','s',9237.5,1,'t','t','r','approved')")
+    c.commit(); c.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db.init()
+    e1 = db.get_entry(1)
+    assert (e1["credit_share"], e1["credit_basis"], e1["credit_note"], e1["is_estimate"]) == (1.0, "direct", None, 0)
+    assert score(db.person_entries("p"))["net"] == 9237.5

@@ -16,6 +16,10 @@ Minimal tracker of net output per person, based on sourced actions. Review is ma
 | reviewed_at | TIMESTAMP NULL | null = pending |
 | reviewer_id | TEXT NULL | set on approval / mark-unproven |
 | status | TEXT NOT NULL DEFAULT 'pending' | one of pending, approved, rejected, unproven |
+| credit_share | REAL NULL DEFAULT 1.0 | 0 < share ≤ 1 |
+| credit_basis | TEXT NULL DEFAULT 'direct' | direct, sourced_share, even_split |
+| credit_note | TEXT NULL | e.g. "Source lists 4 contributors" |
+| is_estimate | INTEGER NULL DEFAULT 0 | 1 = estimate |
 
 ## Table `people`
 
@@ -26,9 +30,19 @@ Minimal tracker of net output per person, based on sourced actions. Review is ma
 
 Used only for homepage avatars; created by `init()`.
 
+## Credit sharing
+
+- Effective scale = scale × credit_share (missing share = 1.0).
+- `direct` (default, share 1.0): the person is credited with the whole action.
+- `sourced_share`: a partial share is counted only when the source itself states it (e.g. 60%). Labeled "Sourced share 60%".
+- `even_split`: when no share is stated but the source lists N contributors, use 1/N. Labeled "Even split 1/N".
+- Estimates (`is_estimate` = 1) are labeled and excluded from the score by default; add `?include_estimates=1` to the person page/API or homepage (toggle links provided) to include them.
+- Existing entries are migrated to share 1.0 / direct / not estimate, so earlier scores do not change.
+- `POST /api/entries/{id}/credit` with `{credit_share, credit_basis, credit_note, is_estimate, reviewer_id}` updates these on an existing entry (records reviewer_id).
+
 ## Scoring (pure function `app/scoring.py`, no stored totals)
 
-Over approved entries only (`status = 'approved'`):
+Over approved entries only (`status = 'approved'`), using effective scale, excluding estimates unless included:
 
 - positive_total = sum of scale where direction = +1
 - negative_total = sum of scale where direction = −1

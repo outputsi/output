@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS entries (
 STATUS_DDL = "TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','unproven'))"
 
 
+CREDIT_BASES = ("direct", "sourced_share", "even_split")
+# (column, sqlite ddl, postgres ddl) added by init() migration on both backends
+CREDIT_COLS = [
+    ("credit_share", "REAL DEFAULT 1.0 CHECK (credit_share IS NULL OR (credit_share > 0 AND credit_share <= 1))",
+     "DOUBLE PRECISION DEFAULT 1.0 CHECK (credit_share IS NULL OR (credit_share > 0 AND credit_share <= 1))"),
+    ("credit_basis", "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split'))",
+     "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split'))"),
+    ("credit_note", "TEXT NULL", "TEXT NULL"),
+    ("is_estimate", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+]
+
+
 def database_url():
     url = os.environ.get("DATABASE_URL")
     if url and url.startswith("postgres://"):
@@ -115,6 +127,18 @@ def init():
             if "status" not in cols:
                 cur.execute(f"ALTER TABLE entries ADD COLUMN status {STATUS_DDL}")
         cur.execute("UPDATE entries SET status='approved' WHERE reviewed_at IS NOT NULL AND status='pending'")
+        # Credit columns (nullable, defaults keep existing scores unchanged).
+        if pg:
+            for name, _, pg_ddl in CREDIT_COLS:
+                cur.execute(f"ALTER TABLE entries ADD COLUMN IF NOT EXISTS {name} {pg_ddl}")
+        else:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(entries)").fetchall()]
+            for name, lite_ddl, _ in CREDIT_COLS:
+                if name not in cols:
+                    cur.execute(f"ALTER TABLE entries ADD COLUMN {name} {lite_ddl}")
+        cur.execute("UPDATE entries SET credit_share=1.0 WHERE credit_share IS NULL")
+        cur.execute("UPDATE entries SET credit_basis='direct' WHERE credit_basis IS NULL")
+        cur.execute("UPDATE entries SET is_estimate=0 WHERE is_estimate IS NULL")
     _initialized.add(key)
 
 
@@ -123,11 +147,14 @@ def _ensure():
         init()
 
 
-def insert_entry(person_id, action, source, scale, direction):
+def insert_entry(person_id, action, source, scale, direction,
+                 credit_share=1.0, credit_basis="direct", credit_note=None, is_estimate=False):
     _ensure()
     with connect() as (cur, ph):
-        sql = "INSERT INTO entries (person_id, action, source, scale, direction, created_at) VALUES (?,?,?,?,?,?)"
-        params = (person_id, action, source, scale, direction, now())
+        sql = ("INSERT INTO entries (person_id, action, source, scale, direction, created_at, "
+               "credit_share, credit_basis, credit_note, is_estimate) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        params = (person_id, action, source, scale, direction, now(),
+                  credit_share, credit_basis, credit_note, int(bool(is_estimate)))
         if ph == "%s":
             cur.execute(_q(sql + " RETURNING id", ph), params)
             new_id = cur.fetchone()["id"]
@@ -202,4 +229,16 @@ def set_person_image(person_id, image_url):
             (person_id, image_url),
         )
         cur.execute(_q("SELECT person_id, image_url FROM people WHERE person_id=?", ph), (person_id,))
+        return _row(cur.fetchone())
+
+
+def update_credit(entry_id, credit_share, credit_basis, credit_note, is_estimate, reviewer_id):
+    """Update credit fields on an existing entry; records who changed it in reviewer_id."""
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(
+            _q("UPDATE entries SET credit_share=?, credit_basis=?, credit_note=?, is_estimate=?, reviewer_id=? WHERE id=?", ph),
+            (credit_share, credit_basis, credit_note, int(bool(is_estimate)), reviewer_id, entry_id),
+        )
+        cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
         return _row(cur.fetchone())
