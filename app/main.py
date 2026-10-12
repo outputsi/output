@@ -26,14 +26,14 @@ class EntryIn(BaseModel):
     scale: float = Field(ge=0)
     direction: Literal[1, -1]
     credit_share: float = Field(1.0, gt=0, le=1)
-    credit_basis: Literal["direct", "sourced_share", "even_split"] = "direct"
+    credit_basis: Literal["direct", "sourced_share", "even_split", "organization"] = "direct"
     credit_note: str | None = None
     is_estimate: bool = False
 
 
 class CreditIn(BaseModel):
     credit_share: float = Field(gt=0, le=1)
-    credit_basis: Literal["direct", "sourced_share", "even_split"]
+    credit_basis: Literal["direct", "sourced_share", "even_split", "organization"]
     credit_note: str | None = None
     is_estimate: bool = False
     reviewer_id: str = Field(min_length=1)
@@ -110,6 +110,17 @@ def api_approve_estimate(entry_id: int, body: ApproveIn):
     if e["status"] != "unproven" or not e["is_estimate"]:
         raise HTTPException(409, "only unproven estimate entries can be approved here")
     return db.approve_unproven(entry_id, body.reviewer_id)
+
+
+@app.post("/api/entries/{entry_id}/reapprove")
+def api_reapprove(entry_id: int, body: ApproveIn):
+    """Re-check: approve an unproven entry that passes the current policy."""
+    e = db.get_entry(entry_id)
+    if not e:
+        raise HTTPException(404, "entry not found")
+    if e["status"] != "unproven":
+        raise HTTPException(409, "only unproven entries can be re-approved")
+    return db.reapprove(entry_id, body.reviewer_id)
 
 
 @app.post("/api/entries/{entry_id}/mark-unproven")
@@ -208,6 +219,9 @@ def ranking(include_estimates=True):
     people = []
     for pid, es in by_person.items():
         sc = score(es, include_estimates)
+        counted = any(e["status"] == "approved" and (include_estimates or not e.get("is_estimate")) for e in es)
+        if sc["net"] == 0 and not counted:
+            continue  # hidden until something counts
         people.append({"person_id": pid, "name": pretty(pid), "net": sc["net"], "positive_pct": sc["positive_pct"],
                        "negative_pct": sc["negative_pct"], "image_url": images.get(pid)})
     people.sort(key=lambda p: (-p["net"], p["person_id"]))
@@ -292,7 +306,7 @@ def ui_submit_page(msg: str = ""):
 <p>scale <input name="scale" type="number" step="any" min="0" required></p>
 <p>direction <select name="direction"><option value="1">+1</option><option value="-1">-1</option></select></p>
 <p>credit_share (0&lt;x&le;1, optional) <input name="credit_share" type="number" step="any" min="0" max="1" placeholder="1.0"></p>
-<p>credit_basis <select name="credit_basis"><option value="direct">direct</option><option value="sourced_share">sourced_share</option><option value="even_split">even_split</option></select></p>
+<p>credit_basis <select name="credit_basis"><option value="direct">direct</option><option value="sourced_share">sourced_share</option><option value="even_split">even_split</option><option value="organization">organization</option></select></p>
 <p>credit_note (optional) <input name="credit_note" size="60" placeholder="e.g. Source lists 4 contributors"></p>
 <p><label><input type="checkbox" name="is_estimate" value="1"> is_estimate</label></p>
 <button>Submit to queue</button></form>

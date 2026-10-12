@@ -40,13 +40,13 @@ CREATE TABLE IF NOT EXISTS entries (
 STATUS_DDL = "TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','unproven'))"
 
 
-CREDIT_BASES = ("direct", "sourced_share", "even_split")
+CREDIT_BASES = ("direct", "sourced_share", "even_split", "organization")
 # (column, sqlite ddl, postgres ddl) added by init() migration on both backends
 CREDIT_COLS = [
     ("credit_share", "REAL DEFAULT 1.0 CHECK (credit_share IS NULL OR (credit_share > 0 AND credit_share <= 1))",
      "DOUBLE PRECISION DEFAULT 1.0 CHECK (credit_share IS NULL OR (credit_share > 0 AND credit_share <= 1))"),
-    ("credit_basis", "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split'))",
-     "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split'))"),
+    ("credit_basis", "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split','organization'))",
+     "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split','organization'))"),
     ("credit_note", "TEXT NULL", "TEXT NULL"),
     ("is_estimate", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
 ]
@@ -142,6 +142,11 @@ def init():
             for name, lite_ddl, _ in CREDIT_COLS:
                 if name not in cols:
                     cur.execute(f"ALTER TABLE entries ADD COLUMN {name} {lite_ddl}")
+        if pg:  # allow the 'organization' credit basis on existing tables
+            cur.execute("ALTER TABLE entries DROP CONSTRAINT IF EXISTS entries_credit_basis_check")
+            cur.execute("ALTER TABLE entries DROP CONSTRAINT IF EXISTS entries_credit_basis_chk")
+            cur.execute("ALTER TABLE entries ADD CONSTRAINT entries_credit_basis_chk CHECK (credit_basis IS NULL OR "
+                        "credit_basis IN ('direct','sourced_share','even_split','organization'))")
         cur.execute("UPDATE entries SET credit_share=1.0 WHERE credit_share IS NULL")
         cur.execute("UPDATE entries SET credit_basis='direct' WHERE credit_basis IS NULL")
         cur.execute("UPDATE entries SET is_estimate=0 WHERE is_estimate IS NULL")
@@ -186,6 +191,10 @@ def get_entry(entry_id):
 
 def approve_entry(entry_id, reviewer_id):
     return _review(entry_id, reviewer_id, "approved")
+
+
+def reapprove(entry_id, reviewer_id):
+    return _review(entry_id, reviewer_id, "approved", ("unproven",))
 
 
 def approve_unproven(entry_id, reviewer_id):

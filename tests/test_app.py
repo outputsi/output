@@ -166,12 +166,12 @@ def test_home_ranking_order(client):
     _approve(client, person_id="low-guy", scale=1)
     _approve(client, person_id="top-person", scale=100)
     _approve(client, person_id="neg-one", scale=5, direction=-1)
-    sub(client, person_id="pending-only", scale=1000)  # pending counts 0 but appears
+    sub(client, person_id="pending-only", scale=1000)  # pending counts 0 -> hidden
     r = client.get("/")
     assert r.status_code == 200
     h = r.text
-    order = [h.index(f'data-person="{p}"') for p in ("top-person", "low-guy", "pending-only", "neg-one")]
-    assert order == sorted(order)
+    order = [h.index(f'data-person="{p}"') for p in ("top-person", "low-guy", "neg-one")]
+    assert order == sorted(order) and 'data-person="pending-only"' not in h
     assert 'href="/people/top-person"' in h and "Top Person" in h
 
 
@@ -219,7 +219,7 @@ def test_pct_display(client):
     assert client.get("/api/people/nobody").json()["positive_pct"] is None
     h = client.get("/").text
     assert '<span class="pos">100%</span> · <span class="neg">0%</span>' in h
-    assert '<span class="na">\u2014</span>' in h and "9,237.5" not in h and "bar" not in h
+    assert 'data-person="nobody"' not in h and "9,237.5" not in h and "bar" not in h
     t = client.get("/people/jonas-salk").text
     assert "Positive share: <span style='color:#1a8f4c'>100%</span>" in t
     assert "Negative share: <span style='color:#c93a3a'>0%</span>" in t
@@ -385,3 +385,20 @@ def test_make_primary_source(client):
     r = client.post(f"/api/entries/{i}/sources", json={"url": "https://better.example", "reviewer_id": "r", "make_primary": True})
     assert r.json()["source"] == "https://better.example" and r.json()["extra_sources"] == []
     assert client.get(f"/api/entries/{i}/sources").json()["source"] == "https://better.example"
+
+
+def test_home_hides_zero_uncounted_and_org_reapprove(client):
+    sub(client, person_id="nobody", scale=5)
+    _approve(client, person_id="somebody", scale=5)
+    h = client.get("/").text
+    assert 'data-person="nobody"' not in h and 'data-person="somebody"' in h
+    assert client.get("/api/people/nobody").status_code == 200
+    e = sub(client, person_id="nobody", scale=30).json()["id"]
+    client.post(f"/api/entries/{e}/mark-unproven", json={"reviewer_id": "r"})
+    r = client.post(f"/api/entries/{e}/credit", json={"credit_share": 1, "credit_basis": "organization",
+                                                       "is_estimate": False, "reviewer_id": "r"})
+    assert r.status_code == 200
+    assert client.post(f"/api/entries/{e}/reapprove", json={"reviewer_id": "r"}).json()["status"] == "approved"
+    assert client.post(f"/api/entries/{e}/reapprove", json={"reviewer_id": "r"}).status_code == 409
+    assert 'data-person="nobody"' in client.get("/").text
+    assert "Organization" in client.get("/people/nobody").text

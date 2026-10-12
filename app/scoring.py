@@ -44,6 +44,8 @@ def credit_label(e):
     share = 1.0 if share is None else float(share)
     if basis == "sourced_share":
         return "Sourced share " + fmt_pct(share * 100)
+    if basis == "organization":
+        return "Organization" if share == 1 else "Organization " + fmt_pct(share * 100)
     if basis == "even_split":
         return f"Even split 1/{round(1 / share)}" if share > 0 else "Even split"
     return "Direct" if share == 1 else "Direct " + fmt_pct(share * 100)
