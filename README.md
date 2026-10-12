@@ -14,11 +14,12 @@ Minimal tracker of net output per person, based on sourced actions. Review is ma
 | direction | INTEGER | +1 or −1 only |
 | created_at | TIMESTAMP | set on submit (UTC ISO) |
 | reviewed_at | TIMESTAMP NULL | null = pending |
-| reviewer_id | TEXT NULL | set on approval |
+| reviewer_id | TEXT NULL | set on approval / mark-unproven |
+| status | TEXT NOT NULL DEFAULT 'pending' | one of pending, approved, rejected, unproven |
 
 ## Scoring (pure function `app/scoring.py`, no stored totals)
 
-Over approved entries only (`reviewed_at` not null):
+Over approved entries only (`status = 'approved'`):
 
 - positive_total = sum of scale where direction = +1
 - negative_total = sum of scale where direction = −1
@@ -29,15 +30,16 @@ Totals are computed on every read, so approval is reflected immediately.
 ## API
 
 - `POST /api/entries` — `{person_id, action, source, scale, direction}` → queued (reviewed_at null)
-- `POST /api/entries/{id}/approve` — `{reviewer_id}` → sets reviewed_at + reviewer_id
-- `GET /api/queue` — pending entries
-- `GET /api/people/{person_id}` — positive_total, negative_total, net, approved entries with sources
+- `POST /api/entries/{id}/approve` — `{reviewer_id}` → status approved, sets reviewed_at + reviewer_id (only from pending; else 409)
+- `POST /api/entries/{id}/mark-unproven` — `{reviewer_id}` → status unproven, sets reviewed_at + reviewer_id (only from pending; 404 unknown, 409 not pending). Source/scale/direction are kept but never counted.
+- `GET /api/queue` — pending entries (status = pending)
+- `GET /api/people/{person_id}` — positive_total, negative_total, net, approved entries with sources (`entries`), plus `not_counted` (unproven/rejected)
 
 ## Web UI
 
 - `/` submit form + import (paste JSON object/list, or upload CSV with header `person_id,action,source,scale,direction`)
-- `/queue` pending entries with approve button (reviewer_id field)
-- `/people/{person_id}` three totals + approved entries with source links
+- `/queue` pending entries with Approve and Mark unproven buttons (reviewer_id field)
+- `/people/{person_id}` three totals, 'Counted entries' (approved), and a separate 'Not counted / unproven' section
 
 ## Run
 
@@ -51,3 +53,5 @@ pytest
 ## Database
 
 If `DATABASE_URL` is set (e.g. Render's `postgres://user:pass@host:5432/db`; `postgres://` and `postgresql://` both accepted), the app uses Postgres via psycopg2. If it is unset, it falls back to a local SQLite file. The `entries` table is created automatically on startup with the same schema in both (Postgres: `SERIAL` id, `DOUBLE PRECISION` scale).
+
+Migration: on startup `init()` adds the `status` column to an existing `entries` table if missing (Postgres `ADD COLUMN IF NOT EXISTS`; SQLite via `PRAGMA table_info`) and backfills `status='approved'` where `reviewed_at IS NOT NULL`.

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS entries (
     direction INTEGER NOT NULL CHECK (direction IN (1, -1)),
     created_at TIMESTAMP NOT NULL,
     reviewed_at TIMESTAMP NULL,
-    reviewer_id TEXT NULL
+    reviewer_id TEXT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','unproven'))
 );
 """
 
@@ -30,9 +31,13 @@ CREATE TABLE IF NOT EXISTS entries (
     direction INTEGER NOT NULL CHECK (direction IN (1, -1)),
     created_at TIMESTAMP NOT NULL,
     reviewed_at TIMESTAMP NULL,
-    reviewer_id TEXT NULL
+    reviewer_id TEXT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','unproven'))
 );
 """
+
+
+STATUS_DDL = "TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','unproven'))"
 
 
 def database_url():
@@ -92,7 +97,16 @@ def init():
     """Create the table if missing. Safe to call repeatedly."""
     key = database_url() or DB_PATH
     with connect() as (cur, ph):
-        cur.execute(PG_SCHEMA if ph == "%s" else SQLITE_SCHEMA)
+        pg = ph == "%s"
+        cur.execute(PG_SCHEMA if pg else SQLITE_SCHEMA)
+        # Migrate tables created before the status column existed.
+        if pg:
+            cur.execute(f"ALTER TABLE entries ADD COLUMN IF NOT EXISTS status {STATUS_DDL}")
+        else:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(entries)").fetchall()]
+            if "status" not in cols:
+                cur.execute(f"ALTER TABLE entries ADD COLUMN status {STATUS_DDL}")
+        cur.execute("UPDATE entries SET status='approved' WHERE reviewed_at IS NOT NULL AND status='pending'")
     _initialized.add(key)
 
 
@@ -124,11 +138,19 @@ def get_entry(entry_id):
 
 
 def approve_entry(entry_id, reviewer_id):
+    return _review(entry_id, reviewer_id, "approved")
+
+
+def mark_unproven(entry_id, reviewer_id):
+    return _review(entry_id, reviewer_id, "unproven")
+
+
+def _review(entry_id, reviewer_id, status):
     _ensure()
     with connect() as (cur, ph):
         cur.execute(
-            _q("UPDATE entries SET reviewed_at=?, reviewer_id=? WHERE id=? AND reviewed_at IS NULL", ph),
-            (now(), reviewer_id, entry_id),
+            _q("UPDATE entries SET status=?, reviewed_at=?, reviewer_id=? WHERE id=? AND status='pending'", ph),
+            (status, now(), reviewer_id, entry_id),
         )
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
         return _row(cur.fetchone())
@@ -137,7 +159,7 @@ def approve_entry(entry_id, reviewer_id):
 def queue():
     _ensure()
     with connect() as (cur, ph):
-        cur.execute("SELECT * FROM entries WHERE reviewed_at IS NULL ORDER BY id")
+        cur.execute("SELECT * FROM entries WHERE status='pending' ORDER BY id")
         return [_row(r) for r in cur.fetchall()]
 
 

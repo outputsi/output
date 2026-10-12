@@ -6,7 +6,8 @@ A = "2026-01-01T00:00:00"
 
 
 def e(scale, d, approved=True):
-    return {"scale": scale, "direction": d, "reviewed_at": A if approved else None}
+    return {"scale": scale, "direction": d, "reviewed_at": A if approved else None,
+            "status": "approved" if approved else "pending"}
 
 
 def test_empty():
@@ -89,3 +90,51 @@ def test_ui_smoke(client):
         client.post(f"/queue/{e['id']}/approve", data={"reviewer_id": "r"})
     page = client.get("/people/u").text
     assert "Net: 6.0" in page and 'href="https://s.org"' in page and "Book p.4" in page
+
+
+def test_unproven_pure():
+    u = {"scale": 50, "direction": 1, "reviewed_at": A, "status": "unproven"}
+    assert score([u, e(2, -1)])["net"] == -2
+
+
+def test_unproven_does_not_affect_net(client):
+    a = sub(client, scale=10).json()["id"]
+    u = sub(client, scale=99, source="https://claim.example").json()["id"]
+    client.post(f"/api/entries/{a}/approve", json={"reviewer_id": "r"})
+    r = client.post(f"/api/entries/{u}/mark-unproven", json={"reviewer_id": "many"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["status"] == "unproven" and j["reviewer_id"] == "many" and j["reviewed_at"]
+    assert (j["scale"], j["direction"], j["source"]) == (99, 1, "https://claim.example")
+    p = client.get("/api/people/p1").json()
+    assert (p["positive_total"], p["negative_total"], p["net"]) == (10, 0, 10)
+    assert [x["id"] for x in p["entries"]] == [a]
+    assert [x["id"] for x in p["not_counted"]] == [u]
+    assert client.get("/api/queue").json() == []
+    assert client.post(f"/api/entries/{u}/mark-unproven", json={"reviewer_id": "x"}).status_code == 409
+    assert client.post(f"/api/entries/{u}/approve", json={"reviewer_id": "x"}).status_code == 409
+    assert client.post("/api/entries/999/mark-unproven", json={"reviewer_id": "x"}).status_code == 404
+    html = client.get("/people/p1").text
+    assert "Counted entries" in html and "Not counted / unproven" in html and "unproven" in html
+
+
+def test_ui_mark_unproven(client):
+    i = sub(client).json()["id"]
+    assert "Mark unproven" in client.get("/queue").text
+    client.post(f"/queue/{i}/mark-unproven", data={"reviewer_id": "r"})
+    assert client.get("/api/people/p1").json()["not_counted"][0]["status"] == "unproven"
+
+
+def test_sqlite_migration(tmp_path, monkeypatch):
+    import sqlite3
+    from app import db
+    path = str(tmp_path / "old.db")
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, person_id TEXT NOT NULL, action TEXT NOT NULL, "
+              "source TEXT NOT NULL, scale REAL NOT NULL, direction INTEGER NOT NULL, created_at TIMESTAMP NOT NULL, "
+              "reviewed_at TIMESTAMP NULL, reviewer_id TEXT NULL)")
+    c.execute("INSERT INTO entries VALUES (1,'p','a','s',3,1,'t','t','r'),(2,'p','b','s',5,1,'t',NULL,NULL)")
+    c.commit(); c.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db.init()
+    assert db.get_entry(1)["status"] == "approved" and db.get_entry(2)["status"] == "pending"

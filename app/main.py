@@ -33,17 +33,27 @@ class ApproveIn(BaseModel):
 
 def person_view(person_id):
     entries = db.person_entries(person_id)
-    approved = [e for e in entries if e["reviewed_at"] is not None]
-    return {"person_id": person_id, **score(approved), "entries": approved}
+    approved = [e for e in entries if e["status"] == "approved"]
+    not_counted = [e for e in entries if e["status"] in ("unproven", "rejected")]
+    return {"person_id": person_id, **score(approved), "entries": approved, "not_counted": not_counted}
 
 
-def do_approve(entry_id, reviewer_id):
+def _check_pending(entry_id):
     e = db.get_entry(entry_id)
     if not e:
         raise HTTPException(404, "entry not found")
-    if e["reviewed_at"] is not None:
-        raise HTTPException(409, "entry already approved")
+    if e["status"] != "pending":
+        raise HTTPException(409, f"entry is not pending (status={e['status']})")
+
+
+def do_approve(entry_id, reviewer_id):
+    _check_pending(entry_id)
     return db.approve_entry(entry_id, reviewer_id)
+
+
+def do_mark_unproven(entry_id, reviewer_id):
+    _check_pending(entry_id)
+    return db.mark_unproven(entry_id, reviewer_id)
 
 
 # ---------- API ----------
@@ -55,6 +65,11 @@ def api_submit(entry: EntryIn):
 @app.post("/api/entries/{entry_id}/approve")
 def api_approve(entry_id: int, body: ApproveIn):
     return do_approve(entry_id, body.reviewer_id)
+
+
+@app.post("/api/entries/{entry_id}/mark-unproven")
+def api_mark_unproven(entry_id: int, body: ApproveIn):
+    return do_mark_unproven(entry_id, body.reviewer_id)
 
 
 @app.get("/api/queue")
@@ -142,16 +157,24 @@ def ui_queue():
         f"<tr><td>{e['id']}</td><td>{escape(e['person_id'])}</td><td>{escape(e['action'])}</td>"
         f"<td>{link(e['source'])}</td><td>{e['scale']}</td><td>{e['direction']:+d}</td><td>{e['created_at']}</td>"
         f"<td><form method='post' action='/queue/{e['id']}/approve'><input name='reviewer_id' placeholder='reviewer_id' required>"
-        f"<button>Approve</button></form></td></tr>"
+        f"<button>Approve</button></form>"
+        f"<form method='post' action='/queue/{e['id']}/mark-unproven'><input name='reviewer_id' placeholder='reviewer_id' required>"
+        f"<button>Mark unproven</button></form></td></tr>"
         for e in db.queue()
     ) or "<tr><td colspan=8>Queue is empty.</td></tr>"
     return page("Review queue", "<table><tr><th>id</th><th>person</th><th>action</th><th>source</th><th>scale</th>"
-                f"<th>dir</th><th>created_at</th><th>approve</th></tr>{rows}</table>")
+                f"<th>dir</th><th>created_at</th><th>review</th></tr>{rows}</table>")
 
 
 @app.post("/queue/{entry_id}/approve")
 def ui_approve(entry_id: int, reviewer_id: str = Form(...)):
     do_approve(entry_id, reviewer_id)
+    return RedirectResponse("/queue", status_code=303)
+
+
+@app.post("/queue/{entry_id}/mark-unproven")
+def ui_mark_unproven(entry_id: int, reviewer_id: str = Form(...)):
+    do_mark_unproven(entry_id, reviewer_id)
     return RedirectResponse("/queue", status_code=303)
 
 
@@ -165,11 +188,21 @@ def ui_person(person_id: str):
     v = person_view(person_id)
     rows = "".join(
         f"<tr><td>{escape(e['action'])}</td><td>{link(e['source'])}</td><td>{e['scale']}</td>"
-        f"<td>{e['direction']:+d}</td><td>{e['reviewed_at']}</td><td>{escape(e['reviewer_id'])}</td></tr>"
+        f"<td>{e['direction']:+d}</td><td>{e['reviewed_at']}</td><td>{escape(e['reviewer_id'] or '')}</td></tr>"
         for e in v["entries"]
     ) or "<tr><td colspan=6>No approved entries.</td></tr>"
+    nc = "".join(
+        f"<tr><td>{escape(e['action'])}</td><td>{link(e['source'])}</td><td>{e['scale']}</td>"
+        f"<td>{e['direction']:+d}</td><td>{escape(e['status'])}</td></tr>"
+        for e in v["not_counted"]
+    ) or "<tr><td colspan=5>None.</td></tr>"
     return page(f"Person: {person_id}",
                 f"<p><span class='n'>Positive: {v['positive_total']}</span><span class='n'>Negative: {v['negative_total']}</span>"
                 f"<span class='n'>Net: {v['net']}</span></p>"
+                "<h2>Counted entries</h2><p>Approved entries; these drive the totals.</p>"
                 "<table><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>reviewed_at</th><th>reviewer</th></tr>"
-                f"{rows}</table>")
+                f"{rows}</table>"
+                "<hr style='margin:2em 0;border:2px solid #999'>"
+                "<h2>Not counted / unproven</h2><p>Unproven or rejected entries. They do not affect the totals.</p>"
+                "<table style='color:#666'><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>status</th></tr>"
+                f"{nc}</table>")
