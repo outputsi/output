@@ -17,6 +17,15 @@ Minimal tracker of net output per person, based on sourced actions. Review is ma
 | reviewer_id | TEXT NULL | set on approval / mark-unproven |
 | status | TEXT NOT NULL DEFAULT 'pending' | one of pending, approved, rejected, unproven |
 
+## Table `people`
+
+| field | type |
+|---|---|
+| person_id | TEXT PRIMARY KEY |
+| image_url | TEXT NULL |
+
+Used only for homepage avatars; created by `init()`.
+
 ## Scoring (pure function `app/scoring.py`, no stored totals)
 
 Over approved entries only (`status = 'approved'`):
@@ -31,13 +40,15 @@ Totals are computed on every read, so approval is reflected immediately.
 
 - `POST /api/entries` — `{person_id, action, source, scale, direction}` → queued (reviewed_at null)
 - `POST /api/entries/{id}/approve` — `{reviewer_id}` → status approved, sets reviewed_at + reviewer_id (only from pending; else 409)
-- `POST /api/entries/{id}/mark-unproven` — `{reviewer_id}` → status unproven, sets reviewed_at + reviewer_id (only from pending; 404 unknown, 409 not pending). Source/scale/direction are kept but never counted.
+- `POST /api/entries/{id}/mark-unproven` — `{reviewer_id}` → status unproven, sets reviewed_at + reviewer_id (from pending or approved — an approved entry drops out of the totals; 404 unknown, 409 if already unproven/rejected). Source/scale/direction are kept but never counted.
+- `POST /api/people/{person_id}/image` — `{image_url}` (null/empty clears) → sets the avatar image in `people`
 - `GET /api/queue` — pending entries (status = pending)
 - `GET /api/people/{person_id}` — positive_total, negative_total, net, approved entries with sources (`entries`), plus `not_counted` (unproven/rejected)
 
 ## Web UI
 
-- `/` submit form + import (paste JSON object/list, or upload CSV with header `person_id,action,source,scale,direction`)
+- `/` homepage: grid of circular avatars, one per person_id with any entry, showing the prettified name (jonas-salk → Jonas Salk) and net Output, sorted by net descending; initials placeholder when no image; small form to set an image
+- `/submit` submit form + import (paste JSON object/list, or upload CSV with header `person_id,action,source,scale,direction`)
 - `/queue` pending entries with Approve and Mark unproven buttons (reviewer_id field)
 - `/people/{person_id}` three totals, 'Counted entries' (approved), and a separate 'Not counted / unproven' section
 

@@ -91,7 +91,7 @@ def page(title, body):
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title>
 <style>body{{font-family:sans-serif;max-width:900px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}
 td,th{{border:1px solid #ccc;padding:4px;text-align:left}}.n{{font-size:1.4em;margin-right:2em}}</style></head>
-<body><nav><a href="/">Submit / Import</a> | <a href="/queue">Queue</a> |
+<body><nav><a href="/">Home</a> | <a href="/submit">Submit</a> | <a href="/queue">Queue</a> |
 <form style="display:inline" action="/person"><input name="person_id" placeholder="person_id"><button>View person</button></form></nav>
 <h1>{escape(title)}</h1>{body}</body></html>""")
 
@@ -103,8 +103,86 @@ def link(src):
     return s
 
 
+class ImageIn(BaseModel):
+    image_url: str | None = None
+
+
+def pretty(person_id):
+    return " ".join(w.capitalize() for w in person_id.replace("_", "-").split("-") if w)
+
+
+def initials(person_id):
+    words = pretty(person_id).split()
+    return "".join(w[0] for w in words[:2]).upper() or "?"
+
+
+def ranking():
+    entries = db.all_entries()
+    images = db.people_images()
+    by_person = {}
+    for e in entries:
+        by_person.setdefault(e["person_id"], []).append(e)
+    people = [{"person_id": pid, "name": pretty(pid), "net": score(es)["net"], "image_url": images.get(pid)}
+              for pid, es in by_person.items()]
+    people.sort(key=lambda p: (-p["net"], p["person_id"]))
+    return people
+
+
+@app.post("/api/people/{person_id}/image")
+def api_person_image(person_id: str, body: ImageIn):
+    return db.set_person_image(person_id, (body.image_url or "").strip() or None)
+
+
+@app.post("/people-image")
+def ui_person_image(person_id: str = Form(...), image_url: str = Form("")):
+    db.set_person_image(person_id, image_url.strip() or None)
+    return RedirectResponse("/", status_code=303)
+
+
+HOME_CSS = """
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#222;background:#fafafa}
+.top{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid #eee;background:#fff}
+.top .brand{font-weight:600;font-size:1.1em;color:#222;text-decoration:none}
+.top nav a{margin-left:20px;color:#555;text-decoration:none}
+.top nav a:hover{color:#000}
+main{max-width:1100px;margin:0 auto;padding:36px 24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:32px 24px}
+.card{display:flex;flex-direction:column;align-items:center;text-decoration:none;color:inherit;padding:12px;border-radius:12px;transition:background .15s,transform .15s}
+.card:hover{background:#fff;transform:translateY(-2px);box-shadow:0 2px 10px rgba(0,0,0,.06)}
+.avatar{width:112px;height:112px;border-radius:50%;object-fit:cover;background:#e4e4e7;display:flex;align-items:center;justify-content:center;font-size:2em;font-weight:600;color:#71717a}
+.name{margin-top:12px;font-weight:500;text-align:center}
+.net{margin-top:4px;color:#666;font-variant-numeric:tabular-nums}
+.empty{color:#777}
+details{margin-top:48px;color:#555}
+details input{padding:6px;margin:4px}
+"""
+
+
 @app.get("/", response_class=HTMLResponse)
-def ui_home(msg: str = ""):
+def ui_home():
+    cards = []
+    for p in ranking():
+        pid = escape(p["person_id"])
+        if p["image_url"]:
+            av = f'<img class="avatar" src="{escape(p["image_url"])}" alt="{escape(p["name"])}">'
+        else:
+            av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
+        cards.append(f'<a class="card" href="/people/{pid}" data-person="{pid}">{av}'
+                     f'<div class="name">{escape(p["name"])}</div><div class="net">Output {p["net"]:g}</div></a>')
+    grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
+<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/submit">Submit</a><a href="/queue">Queue</a></nav></header>
+<main>{grid}
+<details><summary>Set a person's image</summary>
+<form method="post" action="/people-image"><input name="person_id" placeholder="person_id" required>
+<input name="image_url" placeholder="https://... (blank to clear)" size="40"><button>Save</button></form></details>
+</main></body></html>""")
+
+
+@app.get("/submit", response_class=HTMLResponse)
+def ui_submit_page(msg: str = ""):
     m = f"<p><b>{escape(msg)}</b></p>" if msg else ""
     return page("Submit entry", m + """
 <form method="post" action="/submit">
@@ -129,7 +207,7 @@ def ui_submit(person_id: str = Form(...), action: str = Form(...), source: str =
     except ValidationError as ex:
         raise HTTPException(422, ex.errors())
     db.insert_entry(**e.model_dump())
-    return RedirectResponse("/?msg=Entry+queued+for+review", status_code=303)
+    return RedirectResponse("/submit?msg=Entry+queued+for+review", status_code=303)
 
 
 @app.post("/import")
@@ -152,7 +230,7 @@ async def ui_import(json_text: str = Form(""), csv_file: UploadFile | None = Fil
         raise HTTPException(422, ex.errors())
     for e in entries:
         db.insert_entry(**e.model_dump())
-    return RedirectResponse(f"/?msg=Imported+{len(entries)}+entries+into+queue", status_code=303)
+    return RedirectResponse(f"/submit?msg=Imported+{len(entries)}+entries+into+queue", status_code=303)
 
 
 @app.get("/queue", response_class=HTMLResponse)

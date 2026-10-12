@@ -154,3 +154,44 @@ def test_approved_marked_unproven_drops_out(client):
     assert (p["positive_total"], p["negative_total"], p["net"]) == (0, 3, -3)
     assert [x["id"] for x in p["not_counted"]] == [a]
     assert client.post(f"/api/entries/{a}/mark-unproven", json={"reviewer_id": "x"}).status_code == 409
+
+
+def _approve(c, **kw):
+    i = sub(c, **kw).json()["id"]
+    c.post(f"/api/entries/{i}/approve", json={"reviewer_id": "r"})
+    return i
+
+
+def test_home_ranking_order(client):
+    _approve(client, person_id="low-guy", scale=1)
+    _approve(client, person_id="top-person", scale=100)
+    _approve(client, person_id="neg-one", scale=5, direction=-1)
+    sub(client, person_id="pending-only", scale=1000)  # pending counts 0 but appears
+    r = client.get("/")
+    assert r.status_code == 200
+    h = r.text
+    order = [h.index(f'data-person="{p}"') for p in ("top-person", "low-guy", "pending-only", "neg-one")]
+    assert order == sorted(order)
+    assert 'href="/people/top-person"' in h and "Top Person" in h
+
+
+def test_home_placeholder_initials(client):
+    _approve(client, person_id="jonas-salk")
+    h = client.get("/").text
+    assert '<div class="avatar placeholder">JS</div>' in h and "Jonas Salk" in h
+
+
+def test_set_person_image(client):
+    _approve(client, person_id="jonas-salk")
+    r = client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg"})
+    assert r.status_code == 200 and r.json() == {"person_id": "jonas-salk", "image_url": "https://img.example/js.jpg"}
+    client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/2.jpg"})
+    h = client.get("/").text
+    assert '<img class="avatar" src="https://img.example/2.jpg"' in h and "avatar placeholder" not in h
+    client.post("/people-image", data={"person_id": "jonas-salk", "image_url": ""})
+    assert "avatar placeholder" in client.get("/").text
+
+
+def test_submit_page_moved(client):
+    h = client.get("/submit").text
+    assert "Submit to queue" in h and "Import into queue" in h

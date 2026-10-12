@@ -90,6 +90,13 @@ def _q(sql, ph):
     return sql.replace("?", ph)
 
 
+PEOPLE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS people (
+    person_id TEXT PRIMARY KEY,
+    image_url TEXT NULL
+);
+"""
+
 _initialized = set()
 
 
@@ -99,6 +106,7 @@ def init():
     with connect() as (cur, ph):
         pg = ph == "%s"
         cur.execute(PG_SCHEMA if pg else SQLITE_SCHEMA)
+        cur.execute(PEOPLE_SCHEMA)
         # Migrate tables created before the status column existed.
         if pg:
             cur.execute(f"ALTER TABLE entries ADD COLUMN IF NOT EXISTS status {STATUS_DDL}")
@@ -169,3 +177,29 @@ def person_entries(person_id):
     with connect() as (cur, ph):
         cur.execute(_q("SELECT * FROM entries WHERE person_id=? ORDER BY id", ph), (person_id,))
         return [_row(r) for r in cur.fetchall()]
+
+
+def all_entries():
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT * FROM entries ORDER BY id")
+        return [_row(r) for r in cur.fetchall()]
+
+
+def people_images():
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT person_id, image_url FROM people")
+        return {r["person_id"]: r["image_url"] for r in cur.fetchall()}
+
+
+def set_person_image(person_id, image_url):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(
+            _q("INSERT INTO people (person_id, image_url) VALUES (?, ?) "
+               "ON CONFLICT (person_id) DO UPDATE SET image_url = excluded.image_url", ph),
+            (person_id, image_url),
+        )
+        cur.execute(_q("SELECT person_id, image_url FROM people WHERE person_id=?", ph), (person_id,))
+        return _row(cur.fetchone())
