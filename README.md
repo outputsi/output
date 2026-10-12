@@ -42,6 +42,16 @@ Used only for homepage avatars; created by `init()`.
 - Existing entries are migrated to share 1.0 / direct / not estimate, so earlier scores do not change.
 - `POST /api/entries/{id}/credit` with `{credit_share, credit_basis, credit_note, is_estimate, reviewer_id}` updates these on an existing entry (records reviewer_id).
 
+## Verification policy
+
+1. The primary / closest record wins.
+2. An entry needs 2 independent, very trusted sources agreeing on the same number; a 3rd source is the tiebreaker.
+3. Sources that show their method beat bare totals.
+4. When sources disagree, use the lowest shared/documented number, with a note.
+5. Otherwise the entry is unproven, with all sources shown.
+
+Very trusted = peer-reviewed journals, government/official bodies and inquiries, national archives, major museums/memorials, university presses, Nobel, main Britannica, major newspapers of record.
+
 ## Scoring (pure function `app/scoring.py`, no stored totals)
 
 Over approved entries only (`status = 'approved'`), using effective scale, excluding estimates unless included:
