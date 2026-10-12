@@ -49,7 +49,7 @@ Totals are computed on every read, so approval is reflected immediately.
 
 ## Web UI
 
-- `/` homepage: grid of circular avatars, one per person_id with any entry, showing the prettified name (jonas-salk → Jonas Salk) and positive and negative share (e.g. 91% positive · 9% negative) with a thin green/red bar; — and a grey bar when nothing is counted, sorted by net descending; initials placeholder when no image; small form to set an image
+- `/` homepage: grid of circular avatars, one per person_id with any entry, showing the prettified name (jonas-salk → Jonas Salk) and positive and negative share (e.g. green 91% · red 9%); grey — when nothing is counted, sorted by net descending; initials placeholder when no image; small form to set an image
 - `/submit` submit form + import (paste JSON object/list, or upload CSV with header `person_id,action,source,scale,direction`)
 - `/queue` pending entries with Approve and Mark unproven buttons (reviewer_id field)
 - `/people/{person_id}` three totals, 'Counted entries' (approved), and a separate 'Not counted / unproven' section

@@ -218,10 +218,11 @@ def test_pct_display(client):
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
     assert client.get("/api/people/nobody").json()["positive_pct"] is None
     h = client.get("/").text
-    assert '<div class="net">100% positive · 0% negative</div>' in h and '<div class="net">\u2014</div>' in h
-    assert "9,237.5" not in h and '<div class="bar empty"></div>' in h and 'class="pos" style="width:100%"' in h
+    assert '<span class="pos">100%</span> · <span class="neg">0%</span>' in h
+    assert '<span class="na">\u2014</span>' in h and "9,237.5" not in h and "bar" not in h
     t = client.get("/people/jonas-salk").text
-    assert "Positive share: 100%" in t and "Negative share: 0%" in t
+    assert "Positive share: <span style='color:#1a8f4c'>100%</span>" in t
+    assert "Negative share: <span style='color:#c93a3a'>0%</span>" in t
 
 
 def test_negative_pct_90_10_and_none():
@@ -235,5 +236,4 @@ def test_home_90_10_bar(client):
     _approve(client, person_id="mixed", scale=10, direction=-1)
     assert client.get("/api/people/mixed").json()["negative_pct"] == pytest.approx(10)
     h = client.get("/").text
-    assert "90% positive · 10% negative" in h
-    assert 'class="pos" style="width:90%"' in h and 'class="neg" style="width:10%"' in h
+    assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
