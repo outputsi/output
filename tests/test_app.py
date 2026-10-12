@@ -11,15 +11,15 @@ def e(scale, d, approved=True):
 
 
 def test_empty():
-    assert score([]) == {"positive_total": 0, "negative_total": 0, "net": 0, "positive_pct": None}
+    assert score([]) == {"positive_total": 0, "negative_total": 0, "net": 0, "positive_pct": None, "negative_pct": None}
 
 
 def test_mixed():
-    assert score([e(10, 1), e(3, -1), e(5, 1)]) == {"positive_total": 15, "negative_total": 3, "net": 12, "positive_pct": pytest.approx(83.333333)}
+    assert score([e(10, 1), e(3, -1), e(5, 1)]) == {"positive_total": 15, "negative_total": 3, "net": 12, "positive_pct": pytest.approx(83.333333), "negative_pct": pytest.approx(16.666667)}
 
 
 def test_all_negative():
-    assert score([e(4, -1), e(6, -1)]) == {"positive_total": 0, "negative_total": 10, "net": -10, "positive_pct": 0}
+    assert score([e(4, -1), e(6, -1)]) == {"positive_total": 0, "negative_total": 10, "net": -10, "positive_pct": 0, "negative_pct": 100}
 
 
 def test_floats():
@@ -218,5 +218,22 @@ def test_pct_display(client):
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
     assert client.get("/api/people/nobody").json()["positive_pct"] is None
     h = client.get("/").text
-    assert '<div class="net">100%</div>' in h and '<div class="net">\u2014</div>' in h and "9,237.5" not in h
-    assert "Positive share: 100%" in client.get("/people/jonas-salk").text
+    assert '<div class="net">100% positive · 0% negative</div>' in h and '<div class="net">\u2014</div>' in h
+    assert "9,237.5" not in h and '<div class="bar empty"></div>' in h and 'class="pos" style="width:100%"' in h
+    t = client.get("/people/jonas-salk").text
+    assert "Positive share: 100%" in t and "Negative share: 0%" in t
+
+
+def test_negative_pct_90_10_and_none():
+    r = score([e(90, 1), e(10, -1)])
+    assert r["positive_pct"] == pytest.approx(90) and r["negative_pct"] == pytest.approx(10)
+    assert score([])["negative_pct"] is None
+
+
+def test_home_90_10_bar(client):
+    _approve(client, person_id="mixed", scale=90)
+    _approve(client, person_id="mixed", scale=10, direction=-1)
+    assert client.get("/api/people/mixed").json()["negative_pct"] == pytest.approx(10)
+    h = client.get("/").text
+    assert "90% positive · 10% negative" in h
+    assert 'class="pos" style="width:90%"' in h and 'class="neg" style="width:10%"' in h

@@ -4,7 +4,8 @@
 def score(entries):
     """entries: iterable of dicts with 'scale', 'direction', 'status'.
     Only entries with status == 'approved' count.
-    positive_pct = positive_total / (positive_total + negative_total) * 100, None when both are 0."""
+    positive_pct = positive_total / (positive_total + negative_total) * 100, None when both are 0.
+    negative_pct = negative_total / (positive_total + negative_total) * 100, None when both are 0."""
     pos = neg = 0.0
     for e in entries:
         if e.get("status") != "approved":
@@ -15,7 +16,9 @@ def score(entries):
             neg += float(e["scale"])
     total = pos + neg
     pct = pos / total * 100 if total else None
-    return {"positive_total": pos, "negative_total": neg, "net": pos - neg, "positive_pct": pct}
+    npct = neg / total * 100 if total else None
+    return {"positive_total": pos, "negative_total": neg, "net": pos - neg,
+            "positive_pct": pct, "negative_pct": npct}
 
 
 def fmt_pct(pct):

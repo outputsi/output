@@ -123,7 +123,7 @@ def ranking():
     for e in entries:
         by_person.setdefault(e["person_id"], []).append(e)
     people = [{"person_id": pid, "name": pretty(pid), "net": score(es)["net"],
-               "positive_pct": score(es)["positive_pct"], "image_url": images.get(pid)}
+               "positive_pct": score(es)["positive_pct"], "negative_pct": score(es)["negative_pct"], "image_url": images.get(pid)}
               for pid, es in by_person.items()]
     people.sort(key=lambda p: (-p["net"], p["person_id"]))
     return people
@@ -155,9 +155,24 @@ main{max-width:1100px;margin:0 auto;padding:36px 24px}
 .name{margin-top:12px;font-weight:500;text-align:center}
 .net{margin-top:4px;color:#666;font-variant-numeric:tabular-nums}
 .empty{color:#777}
+.bar{display:flex;width:112px;height:4px;margin-top:6px;border-radius:2px;overflow:hidden;background:#d4d4d8}
+.bar .pos{background:#22a35a}.bar .neg{background:#d64545}
 details{margin-top:48px;color:#555}
 details input{padding:6px;margin:4px}
 """
+
+
+def share_label(p):
+    if p["positive_pct"] is None:
+        return "\u2014"
+    return f'{fmt_pct(p["positive_pct"])} positive · {fmt_pct(p["negative_pct"])} negative'
+
+
+def share_bar(p):
+    if p["positive_pct"] is None:
+        return '<div class="bar empty"></div>'
+    return (f'<div class="bar"><span class="pos" style="width:{p["positive_pct"]:.4g}%"></span>'
+            f'<span class="neg" style="width:{p["negative_pct"]:.4g}%"></span></div>')
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -170,7 +185,7 @@ def ui_home():
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}" data-person="{pid}">{av}'
-                     f'<div class="name">{escape(p["name"])}</div><div class="net">{fmt_pct(p["positive_pct"])}</div></a>')
+                     f'<div class="name">{escape(p["name"])}</div><div class="net">{share_label(p)}</div>{share_bar(p)}</a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
@@ -281,7 +296,7 @@ def ui_person(person_id: str):
     ) or "<tr><td colspan=5>None.</td></tr>"
     return page(f"Person: {person_id}",
                 f"<p><span class='n'>Positive: {v['positive_total']}</span><span class='n'>Negative: {v['negative_total']}</span>"
-                f"<span class='n'>Net: {v['net']}</span><span class='n'>Positive share: {fmt_pct(v['positive_pct'])}</span></p>"
+                f"<span class='n'>Net: {v['net']}</span><span class='n'>Positive share: {fmt_pct(v['positive_pct'])}</span><span class='n'>Negative share: {fmt_pct(v['negative_pct'])}</span></p>"
                 "<h2>Counted entries</h2><p>Approved entries; these drive the totals.</p>"
                 "<table><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>reviewed_at</th><th>reviewer</th></tr>"
                 f"{rows}</table>"
