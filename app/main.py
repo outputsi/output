@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from . import db
-from .scoring import score
+from .scoring import fmt_pct, score
 
 app = FastAPI(title="Output")
 
@@ -122,7 +122,8 @@ def ranking():
     by_person = {}
     for e in entries:
         by_person.setdefault(e["person_id"], []).append(e)
-    people = [{"person_id": pid, "name": pretty(pid), "net": score(es)["net"], "image_url": images.get(pid)}
+    people = [{"person_id": pid, "name": pretty(pid), "net": score(es)["net"],
+               "positive_pct": score(es)["positive_pct"], "image_url": images.get(pid)}
               for pid, es in by_person.items()]
     people.sort(key=lambda p: (-p["net"], p["person_id"]))
     return people
@@ -169,7 +170,7 @@ def ui_home():
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}" data-person="{pid}">{av}'
-                     f'<div class="name">{escape(p["name"])}</div><div class="net">Output {p["net"]:g}</div></a>')
+                     f'<div class="name">{escape(p["name"])}</div><div class="net">{p["net"]:,.10g} · {fmt_pct(p["positive_pct"])} positive</div></a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
@@ -280,7 +281,7 @@ def ui_person(person_id: str):
     ) or "<tr><td colspan=5>None.</td></tr>"
     return page(f"Person: {person_id}",
                 f"<p><span class='n'>Positive: {v['positive_total']}</span><span class='n'>Negative: {v['negative_total']}</span>"
-                f"<span class='n'>Net: {v['net']}</span></p>"
+                f"<span class='n'>Net: {v['net']}</span><span class='n'>Positive share: {fmt_pct(v['positive_pct'])}</span></p>"
                 "<h2>Counted entries</h2><p>Approved entries; these drive the totals.</p>"
                 "<table><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>reviewed_at</th><th>reviewer</th></tr>"
                 f"{rows}</table>"

@@ -11,15 +11,15 @@ def e(scale, d, approved=True):
 
 
 def test_empty():
-    assert score([]) == {"positive_total": 0, "negative_total": 0, "net": 0}
+    assert score([]) == {"positive_total": 0, "negative_total": 0, "net": 0, "positive_pct": None}
 
 
 def test_mixed():
-    assert score([e(10, 1), e(3, -1), e(5, 1)]) == {"positive_total": 15, "negative_total": 3, "net": 12}
+    assert score([e(10, 1), e(3, -1), e(5, 1)]) == {"positive_total": 15, "negative_total": 3, "net": 12, "positive_pct": pytest.approx(83.333333)}
 
 
 def test_all_negative():
-    assert score([e(4, -1), e(6, -1)]) == {"positive_total": 0, "negative_total": 10, "net": -10}
+    assert score([e(4, -1), e(6, -1)]) == {"positive_total": 0, "negative_total": 10, "net": -10, "positive_pct": 0}
 
 
 def test_floats():
@@ -195,3 +195,28 @@ def test_set_person_image(client):
 def test_submit_page_moved(client):
     h = client.get("/submit").text
     assert "Submit to queue" in h and "Import into queue" in h
+
+
+def test_pct_100():
+    assert score([e(5, 1), e(2.5, 1)])["positive_pct"] == 100
+
+
+def test_pct_90():
+    assert score([e(90, 1), e(10, -1)])["positive_pct"] == pytest.approx(90)
+
+
+def test_pct_none_when_zero():
+    assert score([])["positive_pct"] is None
+    assert score([e(5, 1, approved=False)])["positive_pct"] is None
+    from app.scoring import fmt_pct
+    assert fmt_pct(None) == "\u2014" and fmt_pct(100.0) == "100%" and fmt_pct(90.0) == "90%"
+
+
+def test_pct_display(client):
+    a = _approve(client, person_id="jonas-salk", scale=9237.5)
+    sub(client, person_id="nobody", scale=1)
+    assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
+    assert client.get("/api/people/nobody").json()["positive_pct"] is None
+    h = client.get("/").text
+    assert "9,237.5 · 100% positive" in h and "0 · \u2014 positive" in h
+    assert "Positive share: 100%" in client.get("/people/jonas-salk").text

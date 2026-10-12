@@ -33,6 +33,7 @@ Over approved entries only (`status = 'approved'`):
 - positive_total = sum of scale where direction = +1
 - negative_total = sum of scale where direction = −1
 - net = positive_total − negative_total
+- positive_pct (derived, not stored) = positive_total / (positive_total + negative_total) × 100; null (shown as —) when both are 0. Shown on homepage and person page; returned by the person API. Ranking still sorts by net.
 
 Totals are computed on every read, so approval is reflected immediately.
 
