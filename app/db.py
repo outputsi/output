@@ -142,15 +142,16 @@ def approve_entry(entry_id, reviewer_id):
 
 
 def mark_unproven(entry_id, reviewer_id):
-    return _review(entry_id, reviewer_id, "unproven")
+    return _review(entry_id, reviewer_id, "unproven", ("pending", "approved"))
 
 
-def _review(entry_id, reviewer_id, status):
+def _review(entry_id, reviewer_id, status, from_statuses=("pending",)):
     _ensure()
     with connect() as (cur, ph):
         cur.execute(
-            _q("UPDATE entries SET status=?, reviewed_at=?, reviewer_id=? WHERE id=? AND status='pending'", ph),
-            (status, now(), reviewer_id, entry_id),
+            _q("UPDATE entries SET status=?, reviewed_at=?, reviewer_id=? WHERE id=? AND status IN ("
+               + ",".join("?" * len(from_statuses)) + ")", ph),
+            (status, now(), reviewer_id, entry_id, *from_statuses),
         )
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
         return _row(cur.fetchone())

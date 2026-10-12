@@ -52,7 +52,11 @@ def do_approve(entry_id, reviewer_id):
 
 
 def do_mark_unproven(entry_id, reviewer_id):
-    _check_pending(entry_id)
+    e = db.get_entry(entry_id)
+    if not e:
+        raise HTTPException(404, "entry not found")
+    if e["status"] not in ("pending", "approved"):
+        raise HTTPException(409, f"entry cannot be marked unproven (status={e['status']})")
     return db.mark_unproven(entry_id, reviewer_id)
 
 

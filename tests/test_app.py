@@ -138,3 +138,19 @@ def test_sqlite_migration(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", path)
     db.init()
     assert db.get_entry(1)["status"] == "approved" and db.get_entry(2)["status"] == "pending"
+
+
+def test_approved_marked_unproven_drops_out(client):
+    a = sub(client, scale=10).json()["id"]
+    b = sub(client, scale=3, direction=-1).json()["id"]
+    for i in (a, b):
+        client.post(f"/api/entries/{i}/approve", json={"reviewer_id": "r"})
+    assert client.get("/api/people/p1").json()["net"] == 7
+    r = client.post(f"/api/entries/{a}/mark-unproven", json={"reviewer_id": "source-check"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["status"] == "unproven" and j["reviewer_id"] == "source-check" and j["reviewed_at"]
+    p = client.get("/api/people/p1").json()
+    assert (p["positive_total"], p["negative_total"], p["net"]) == (0, 3, -3)
+    assert [x["id"] for x in p["not_counted"]] == [a]
+    assert client.post(f"/api/entries/{a}/mark-unproven", json={"reviewer_id": "x"}).status_code == 409
