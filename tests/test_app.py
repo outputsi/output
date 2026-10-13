@@ -430,3 +430,8 @@ def test_categories_and_overall(client):
 def test_home_shows_nonconvertible_only_person(client):
     _approve(client, person_id="jobsonly", scale=10, category="jobs", unit="jobs")
     assert 'data-person="jobsonly"' in client.get("/").text
+
+
+def test_usd_format():
+    from app.main import usd
+    assert usd(1.42e16) == "+$14,200T" and usd(-3.05e9) == "-$3.05B" and usd(0) == "$0"

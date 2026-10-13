@@ -311,7 +311,8 @@ def usd(v):
     v = abs(v)
     for div, suf in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if v >= div:
-            return f"{sign}${v / div:.3g}{suf}"
+            x = v / div
+            return f"{sign}${x:,.0f}{suf}" if x >= 1000 else f"{sign}${x:.3g}{suf}"
     return f"{sign}${v:.3g}"
 
 
