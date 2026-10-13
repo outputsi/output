@@ -163,9 +163,9 @@ def _approve(c, **kw):
 
 
 def test_home_ranking_order(client):
-    _approve(client, person_id="low-guy", scale=1)
-    _approve(client, person_id="top-person", scale=100)
-    _approve(client, person_id="neg-one", scale=5, direction=-1)
+    _approve(client, person_id="low-guy", scale=1, category="economy", unit="USD")
+    _approve(client, person_id="top-person", scale=100, category="economy", unit="USD")
+    _approve(client, person_id="neg-one", scale=5, direction=-1, category="economy", unit="USD")
     sub(client, person_id="pending-only", scale=1000)  # pending counts 0 -> hidden
     r = client.get("/")
     assert r.status_code == 200
@@ -213,7 +213,7 @@ def test_pct_none_when_zero():
 
 
 def test_pct_display(client):
-    a = _approve(client, person_id="jonas-salk", scale=9237.5)
+    a = _approve(client, person_id="jonas-salk", scale=9237.5, unit="lives")
     sub(client, person_id="nobody", scale=1)
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
     assert client.get("/api/people/nobody").json()["positive_pct"] is None
@@ -232,9 +232,9 @@ def test_negative_pct_90_10_and_none():
 
 
 def test_home_90_10_bar(client):
-    _approve(client, person_id="mixed", scale=90)
-    _approve(client, person_id="mixed", scale=10, direction=-1)
-    assert client.get("/api/people/mixed").json()["negative_pct"] == pytest.approx(10)
+    _approve(client, person_id="mixed", scale=90, category="climate", unit="tCO2e")
+    _approve(client, person_id="mixed", scale=10, direction=-1, category="climate", unit="tCO2e")
+    assert client.get("/api/people/mixed").json()["overall"]["negative_pct"] == pytest.approx(10)
     h = client.get("/").text
     assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
 
@@ -402,3 +402,31 @@ def test_home_hides_zero_uncounted_and_org_reapprove(client):
     assert client.post(f"/api/entries/{e}/reapprove", json={"reviewer_id": "r"}).status_code == 409
     assert 'data-person="nobody"' in client.get("/").text
     assert "Organization" in client.get("/people/nobody").text
+
+
+
+def test_categories_and_overall(client):
+    _approve(client, person_id="cat", scale=2, unit="lives")                       # 2 x VSL
+    _approve(client, person_id="cat", scale=1000, direction=-1, category="climate", unit="tCO2e")
+    _approve(client, person_id="cat", scale=500, category="jobs", unit="jobs")     # not convertible
+    _approve(client, person_id="cat", scale=50)                                    # people: not convertible
+    v = client.get("/api/people/cat").json()
+    assert {(c["category"], c["unit"]) for c in v["categories"]} == {("people", "lives"), ("climate", "tCO2e"),
+                                                                     ("jobs", "jobs"), ("people", "people")}
+    ov = v["overall"]
+    assert ov["overall"] == pytest.approx(2 * 14_200_000 - 1000 * 190)
+    assert set(ov["not_convertible"]) == {"jobs (jobs)", "people (people)"}
+    assert sub(client, category="climate", unit="USD").status_code == 422
+    h = client.get("/people/cat").text
+    assert "By category" in h and "not convertible" in h
+    assert "$28" in client.get("/").text
+    assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"}
+    i = _approve(client, person_id="cat2", scale=7)
+    r = client.post(f"/api/entries/{i}/category", json={"category": "economy", "unit": "USD", "reviewer_id": "r"})
+    assert r.json()["category"] == "economy" and client.get("/api/people/cat2").json()["overall"]["overall"] == 7
+    assert client.post(f"/api/entries/{i}/category", json={"category": "jobs", "unit": "x", "reviewer_id": "r"}).status_code == 422
+
+
+def test_home_shows_nonconvertible_only_person(client):
+    _approve(client, person_id="jobsonly", scale=10, category="jobs", unit="jobs")
+    assert 'data-person="jobsonly"' in client.get("/").text

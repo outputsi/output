@@ -105,3 +105,28 @@ pytest
 If `DATABASE_URL` is set (e.g. Render's `postgres://user:pass@host:5432/db`; `postgres://` and `postgresql://` both accepted), the app uses Postgres via psycopg2. If it is unset, it falls back to a local SQLite file. The `entries` table is created automatically on startup with the same schema in both (Postgres: `SERIAL` id, `DOUBLE PRECISION` scale).
 
 Migration: on startup `init()` adds the `status` column to an existing `entries` table if missing (Postgres `ADD COLUMN IF NOT EXISTS`; SQLite via `PRAGMA table_info`) and backfills `status='approved'` where `reviewed_at IS NOT NULL`.
+
+## Categories, units and the overall score
+
+Output measures a person's total impact, not only people helped or harmed. Each entry has a `category` and `unit` (existing entries default to `people`/`people`):
+
+| category | units |
+|---|---|
+| people | `people` (people affected), `lives` (deaths caused or lives saved, as the source states) |
+| jobs | `jobs` |
+| climate | `tCO2e` (tonnes CO2-equivalent) |
+| nature | `animals`, `hectares` |
+| economy | `USD` (nominal dollars of the year stated; no inflation adjustment) |
+| tech, culture | any measurable unit the source states |
+
+All sourcing rules above apply to every category. Economy: fines count as negative only with an official finding; settlements without one stay unproven. Jobs count as positive when an official filing and a major outlet both state the number.
+
+The person page shows per-category totals side by side. The overall score converts categories to USD **only** with officially published rates, stored in the `conversions` table with their source (`GET /api/conversions`):
+
+- `people/lives`: US DOT value of a statistical life, $14.2M (2025 base year).
+- `climate/tCO2e`: US EPA 2023 social cost of CO2, $190/tonne (2020 emissions, 2% discount rate, 2020 dollars).
+- `economy/USD`: 1:1.
+
+Categories without an official rate (people/people, jobs, nature, tech, culture) are shown but not included in the overall score, and are labeled "not convertible". The homepage ranks by overall score with green/red %, and hides people with nothing counted.
+
+API: entries accept `category` and `unit`; `POST /api/entries/{id}/category` `{category, unit, reviewer_id}` reclassifies an entry.

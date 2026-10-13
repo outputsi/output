@@ -9,7 +9,20 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from . import db
-from .scoring import credit_label, effective_scale, fmt_pct, score
+from .scoring import by_category, credit_label, effective_scale, fmt_pct, overall, score
+
+UNITS = {"people": ("people", "lives"), "jobs": ("jobs",), "climate": ("tCO2e",),
+         "nature": ("animals", "hectares"), "economy": ("USD",), "tech": None, "culture": None}
+
+
+def _check_unit(category, unit):
+    allowed = UNITS[category]
+    if allowed is not None and unit not in allowed:
+        raise HTTPException(422, f"unit for {category} must be one of {allowed}")
+
+
+def rates():
+    return {(c["category"], c["unit"]): float(c["usd_per_unit"]) for c in db.conversions()}
 
 app = FastAPI(title="Output")
 
@@ -29,6 +42,14 @@ class EntryIn(BaseModel):
     credit_basis: Literal["direct", "sourced_share", "even_split", "organization"] = "direct"
     credit_note: str | None = None
     is_estimate: bool = False
+    category: Literal["people", "jobs", "climate", "nature", "economy", "tech", "culture"] = "people"
+    unit: str = Field("people", min_length=1)
+
+
+class CategoryIn(BaseModel):
+    category: Literal["people", "jobs", "climate", "nature", "economy", "tech", "culture"]
+    unit: str = Field(min_length=1)
+    reviewer_id: str = Field(min_length=1)
 
 
 class CreditIn(BaseModel):
@@ -64,7 +85,12 @@ def person_view(person_id, include_estimates=True):
     counted = [e for e in approved if include_estimates or not e["is_estimate"]]
     estimates = [e for e in approved if e["is_estimate"] and not include_estimates]
     not_counted = [e for e in entries if e["status"] in ("unproven", "rejected")]
-    return {"person_id": person_id, **score(approved, include_estimates), "entries": counted,
+    people = [e for e in approved if (e.get("category") or "people") == "people"]
+    cats = [{"category": c, "unit": u, **sc} for (c, u), sc in sorted(by_category(approved, include_estimates).items())]
+    ov = overall(approved, rates(), include_estimates)
+    ov["not_convertible"] = [f"{c} ({u})" for c, u in ov["not_convertible"]]
+    return {"person_id": person_id, **score(people, include_estimates), "categories": cats,
+            "overall": ov, "entries": counted,
             "not_counted": not_counted, "estimates": estimates, "include_estimates": include_estimates}
 
 
@@ -93,7 +119,21 @@ def do_mark_unproven(entry_id, reviewer_id):
 # ---------- API ----------
 @app.post("/api/entries", status_code=201)
 def api_submit(entry: EntryIn):
+    _check_unit(entry.category, entry.unit)
     return db.insert_entry(**entry.model_dump())
+
+
+@app.post("/api/entries/{entry_id}/category")
+def api_category(entry_id: int, body: CategoryIn):
+    if not db.get_entry(entry_id):
+        raise HTTPException(404, "entry not found")
+    _check_unit(body.category, body.unit)
+    return db.set_category(entry_id, body.category, body.unit, body.reviewer_id)
+
+
+@app.get("/api/conversions")
+def api_conversions():
+    return db.conversions()
 
 
 @app.post("/api/entries/{entry_id}/approve")
@@ -217,13 +257,15 @@ def ranking(include_estimates=True):
     for e in entries:
         by_person.setdefault(e["person_id"], []).append(e)
     people = []
+    r = rates()
     for pid, es in by_person.items():
-        sc = score(es, include_estimates)
         counted = any(e["status"] == "approved" and (include_estimates or not e.get("is_estimate")) for e in es)
-        if sc["net"] == 0 and not counted:
+        if not counted:
             continue  # hidden until something counts
-        people.append({"person_id": pid, "name": pretty(pid), "net": sc["net"], "positive_pct": sc["positive_pct"],
-                       "negative_pct": sc["negative_pct"], "image_url": images.get(pid)})
+        ov = overall(es, r, include_estimates)
+        people.append({"person_id": pid, "name": pretty(pid), "net": ov["overall"], "positive_pct": ov["positive_pct"],
+                       "negative_pct": ov["negative_pct"], "not_convertible": ov["not_convertible"],
+                       "image_url": images.get(pid)})
     people.sort(key=lambda p: (-p["net"], p["person_id"]))
     return people
 
@@ -254,6 +296,7 @@ main{max-width:1100px;margin:0 auto;padding:36px 24px}
 .card:hover{background:#fff;transform:translateY(-2px);box-shadow:0 2px 10px rgba(0,0,0,.06)}
 .avatar{width:112px;height:112px;border-radius:50%;object-fit:cover;background:#e4e4e7;display:flex;align-items:center;justify-content:center;font-size:2em;font-weight:600;color:#71717a}
 .name{margin-top:12px;font-weight:500;text-align:center}
+.score{margin-top:4px;font-weight:600;font-variant-numeric:tabular-nums}
 .net{margin-top:4px;color:#666;font-variant-numeric:tabular-nums}
 .empty{color:#777}
 .toggle{margin:0 0 24px;font-size:.9em}.toggle a{color:#555}
@@ -261,6 +304,15 @@ main{max-width:1100px;margin:0 auto;padding:36px 24px}
 details{margin-top:48px;color:#555}
 details input{padding:6px;margin:4px}
 """
+
+
+def usd(v):
+    sign = "-" if v < 0 else ("+" if v > 0 else "")
+    v = abs(v)
+    for div, suf in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if v >= div:
+            return f"{sign}${v / div:.3g}{suf}"
+    return f"{sign}${v:.3g}"
 
 
 def share_label(p):
@@ -283,7 +335,8 @@ def ui_home(include_estimates: bool = True):
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
-                     f'<div class="name">{escape(p["name"])}</div><div class="net">{share_label(p)}</div></a>')
+                     f'<div class="name">{escape(p["name"])}</div><div class="score">{usd(p["net"])}</div>'
+                     f'<div class="net">{share_label(p)}</div></a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
@@ -393,6 +446,23 @@ def _credit_cell(e):
     return f"{escape(e['credit_label'])}{badge}{note}"
 
 
+def _cat_table(v):
+    r = rates()
+    rows = "".join(
+        f"<tr><td>{escape(c['category'])}</td><td>{escape(c['unit'])}</td>"
+        f"<td style='color:#1a8f4c'>{c['positive_total']:g}</td><td style='color:#c93a3a'>{c['negative_total']:g}</td>"
+        f"<td>{c['net']:g}</td><td>{'' if (c['category'], c['unit']) in r else 'not convertible'}</td></tr>"
+        for c in v["categories"]) or "<tr><td colspan=6>Nothing counted.</td></tr>"
+    ov = v["overall"]
+    return ("<h2>By category</h2><table class='cats'><tr><th>category</th><th>unit</th><th>positive</th><th>negative</th>"
+            f"<th>net</th><th></th></tr>{rows}</table>"
+            f"<p>Overall score (USD, official rates only): <b>{usd(ov['overall'])}</b> · "
+            f"<span style='color:#1a8f4c'>{fmt_pct(ov['positive_pct'])}</span> / "
+            f"<span style='color:#c93a3a'>{fmt_pct(ov['negative_pct'])}</span>"
+            + (f" · not convertible: {escape(', '.join(ov['not_convertible']))}" if ov["not_convertible"] else "")
+            + " (<a href='/api/conversions'>rates</a>)</p>")
+
+
 @app.get("/people/{person_id}", response_class=HTMLResponse)
 def ui_person(person_id: str, include_estimates: bool = True):
     v = person_view(person_id, include_estimates)
@@ -431,7 +501,7 @@ def ui_person(person_id: str, include_estimates: bool = True):
             photo += f'<p class="photo-credit" style="font-size:.75em;color:#666;margin-top:-.5em">Photo: {escape(pr["image_credit"] or "")}{lic_html}</p>'
     return page(f"Person: {person_id}", photo +
                 "<style>.badge{background:#fde68a;color:#78350f;border-radius:4px;padding:1px 6px;font-size:.8em}</style>"
-                f"<p>{toggle}</p>"
+                f"<p>{toggle}</p>{_cat_table(v)}"
                 f"<p><span class='n'>Positive: {v['positive_total']}</span><span class='n'>Negative: {v['negative_total']}</span>"
                 f"<span class='n'>Net: {v['net']}</span><span class='n'>Positive share: <span style='color:{"#999" if v["positive_pct"] is None else "#1a8f4c"}'>{fmt_pct(v['positive_pct'])}</span></span><span class='n'>Negative share: <span style='color:{"#999" if v["negative_pct"] is None else "#c93a3a"}'>{fmt_pct(v['negative_pct'])}</span></span></p>"
                 "<h2>Counted entries</h2><p>Approved entries; these drive the totals (effective = scale × credit share).</p>"

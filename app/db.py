@@ -49,6 +49,19 @@ CREDIT_COLS = [
      "TEXT DEFAULT 'direct' CHECK (credit_basis IS NULL OR credit_basis IN ('direct','sourced_share','even_split','organization'))"),
     ("credit_note", "TEXT NULL", "TEXT NULL"),
     ("is_estimate", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("category", "TEXT DEFAULT 'people'", "TEXT DEFAULT 'people'"),
+    ("unit", "TEXT DEFAULT 'people'", "TEXT DEFAULT 'people'"),
+]
+
+# Officially published conversion rates to the common unit (USD). (category, unit, usd_per_unit, source_url, note)
+CONVERSIONS = [
+    ("people", "lives", 14_200_000.0,
+     "https://www.transportation.gov/office-policy/transportation-policy/revised-departmental-guidance-on-valuation-of-a-statistical-life-in-economic-analysis",
+     "US DOT value of a statistical life, $14.2M (2025 base year). Applies only to deaths caused / lives saved."),
+    ("climate", "tCO2e", 190.0,
+     "https://www.epa.gov/system/files/documents/2023-12/epa%5Fscghg%5F2023%5Freport%5Ffinal.pdf",
+     "US EPA 2023 social cost of CO2, $190/tonne (2020 emissions, 2% near-term discount, 2020 dollars)."),
+    ("economy", "USD", 1.0, "", "Already USD; nominal dollars of the year stated, no inflation adjustment."),
 ]
 
 
@@ -150,6 +163,16 @@ def init():
         cur.execute("UPDATE entries SET credit_share=1.0 WHERE credit_share IS NULL")
         cur.execute("UPDATE entries SET credit_basis='direct' WHERE credit_basis IS NULL")
         cur.execute("UPDATE entries SET is_estimate=0 WHERE is_estimate IS NULL")
+        cur.execute("UPDATE entries SET category='people' WHERE category IS NULL")
+        cur.execute("UPDATE entries SET unit='people' WHERE unit IS NULL")
+        cur.execute("CREATE TABLE IF NOT EXISTS conversions (category TEXT NOT NULL, unit TEXT NOT NULL, "
+                    "usd_per_unit DOUBLE PRECISION NOT NULL, source_url TEXT, note TEXT, PRIMARY KEY (category, unit))"
+                    if pg else
+                    "CREATE TABLE IF NOT EXISTS conversions (category TEXT NOT NULL, unit TEXT NOT NULL, "
+                    "usd_per_unit REAL NOT NULL, source_url TEXT, note TEXT, PRIMARY KEY (category, unit))")
+        for row in CONVERSIONS:
+            cur.execute(_q("DELETE FROM conversions WHERE category=? AND unit=?", ph), row[:2])
+            cur.execute(_q("INSERT INTO conversions (category, unit, usd_per_unit, source_url, note) VALUES (?,?,?,?,?)", ph), row)
         # Additional sources per entry.
         cur.execute(
             "CREATE TABLE IF NOT EXISTS entry_sources ("
@@ -165,13 +188,14 @@ def _ensure():
 
 
 def insert_entry(person_id, action, source, scale, direction,
-                 credit_share=1.0, credit_basis="direct", credit_note=None, is_estimate=False):
+                 credit_share=1.0, credit_basis="direct", credit_note=None, is_estimate=False,
+                 category="people", unit="people"):
     _ensure()
     with connect() as (cur, ph):
         sql = ("INSERT INTO entries (person_id, action, source, scale, direction, created_at, "
-               "credit_share, credit_basis, credit_note, is_estimate) VALUES (?,?,?,?,?,?,?,?,?,?)")
+               "credit_share, credit_basis, credit_note, is_estimate, category, unit) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
         params = (person_id, action, source, scale, direction, now(),
-                  credit_share, credit_basis, credit_note, int(bool(is_estimate)))
+                  credit_share, credit_basis, credit_note, int(bool(is_estimate)), category, unit)
         if ph == "%s":
             cur.execute(_q(sql + " RETURNING id", ph), params)
             new_id = cur.fetchone()["id"]
@@ -303,3 +327,19 @@ def entry_sources(entry_ids=None):
             if entry_ids is None or r["entry_id"] in entry_ids:
                 out.setdefault(r["entry_id"], []).append(r)
         return out
+
+
+def conversions():
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT * FROM conversions ORDER BY category, unit")
+        return [_row(r) for r in cur.fetchall()]
+
+
+def set_category(entry_id, category, unit, reviewer_id):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("UPDATE entries SET category=?, unit=?, reviewer_id=? WHERE id=?", ph),
+                    (category, unit, reviewer_id, entry_id))
+        cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
+        return _row(cur.fetchone())
