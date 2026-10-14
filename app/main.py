@@ -93,8 +93,9 @@ def person_view(person_id, include_estimates=True):
     cats = [{"category": c, "unit": u, **sc} for (c, u), sc in sorted(by_category(approved, include_estimates).items())]
     ov = overall(approved, rates(), include_estimates)
     ov["not_convertible"] = [f"{c} ({u})" for c, u in ov["not_convertible"]]
+    other = other_lines(approved, rates(), include_estimates)
     return {"person_id": person_id, **score(people, include_estimates), "categories": cats,
-            "overall": ov, "entries": counted,
+            "overall": ov, "other": other, "entries": counted,
             "not_counted": not_counted, "estimates": estimates, "include_estimates": include_estimates}
 
 
@@ -269,7 +270,7 @@ def ranking(include_estimates=True):
         ov = overall(es, r, include_estimates)
         people.append({"person_id": pid, "name": pretty(pid), "net": ov["overall"], "positive_pct": ov["positive_pct"],
                        "negative_pct": ov["negative_pct"], "not_convertible": ov["not_convertible"],
-                       "estimated": ov["estimated"],
+                       "estimated": ov["estimated"], "other": other_lines(es, r, include_estimates),
                        "image_url": images.get(pid)})
     people.sort(key=lambda p: (-p["net"], p["person_id"]))
     return people
@@ -302,6 +303,7 @@ main{max-width:1100px;margin:0 auto;padding:36px 24px}
 .avatar{width:112px;height:112px;border-radius:50%;object-fit:cover;background:#e4e4e7;display:flex;align-items:center;justify-content:center;font-size:2em;font-weight:600;color:#71717a}
 .name{margin-top:12px;font-weight:500;text-align:center}
 .badge{background:#fde68a;color:#78350f;border-radius:4px;padding:1px 6px;font-size:.75em;font-weight:500}
+.other{font-size:.8em;font-weight:500;margin-top:2px}
 .score{margin-top:4px;font-weight:600;font-variant-numeric:tabular-nums}
 .net{margin-top:4px;color:#666;font-variant-numeric:tabular-nums}
 .empty{color:#777}
@@ -320,6 +322,24 @@ def usd(v):
             x = v / div
             return f"{sign}${x:,.0f}{suf}" if x >= 1000 else f"{sign}${x:.3g}{suf}"
     return f"{sign}${v:.3g}"
+
+
+def other_lines(entries, r, include_estimates=True):
+    """Counted totals of non-convertible categories, in their own units: [(sign, text)]."""
+    out = []
+    for (c, u), sc in sorted(by_category([e for e in entries if e.get("status") == "approved"], include_estimates).items()):
+        if (c, u) in r:
+            continue
+        label = u if c == u or c == "people" else f"{c} {u}"
+        if sc["positive_total"]:
+            out.append(("+", f"+{sc['positive_total']:,.0f} {label}"))
+        if sc["negative_total"]:
+            out.append(("-", f"-{sc['negative_total']:,.0f} {label}"))
+    return out
+
+
+def other_html(lines):
+    return "".join(f'<div class="other {"pos" if s == "+" else "neg"}">{escape(t)}</div>' for s, t in lines)
 
 
 def share_label(p):
@@ -344,7 +364,7 @@ def ui_home(include_estimates: bool = True):
         cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
                      f'<div class="name">{escape(p["name"])}</div><div class="score">{usd(p["net"])}'
                      f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>'
-                     f'<div class="net">{share_label(p)}</div></a>')
+                     f'<div class="net">{share_label(p)}</div>{other_html(p["other"])}</a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
@@ -469,7 +489,10 @@ def _cat_table(v):
             f"<span style='color:#1a8f4c'>{fmt_pct(ov['positive_pct'])}</span> / "
             f"<span style='color:#c93a3a'>{fmt_pct(ov['negative_pct'])}</span>"
             + (f" · not convertible: {escape(', '.join(ov['not_convertible']))}" if ov["not_convertible"] else "")
-            + " (<a href='/api/conversions'>rates</a>)</p>")
+            + " (<a href='/api/conversions'>rates</a>)</p>"
+            + ("<p>Not convertible (own units): " + " · ".join(
+                f"<span style='color:{'#1a8f4c' if sg == '+' else '#c93a3a'}'>{escape(t)}</span>" for sg, t in v["other"]) + "</p>"
+               if v["other"] else ""))
 
 
 @app.get("/people/{person_id}", response_class=HTMLResponse)

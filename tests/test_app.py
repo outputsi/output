@@ -446,3 +446,15 @@ def test_estimate_label_and_currency(client):
     assert client.get("/api/people/eur").json()["overall"]["overall"] == pytest.approx(-1119.4)
     assert client.get("/api/people/eur").json()["overall"]["estimated"] is False
     assert sub(client, category="economy", unit="XYZ-1900").status_code == 422
+
+
+def test_nonconvertible_lines_shown(client):
+    _approve(client, person_id="mix2", scale=2, unit="lives")
+    _approve(client, person_id="mix2", scale=78000, direction=-1)
+    _approve(client, person_id="mix2", scale=500, category="jobs", unit="jobs")
+    _approve(client, person_id="zero-but-counted", scale=50)
+    h = client.get("/").text
+    assert '<div class="other neg">-78,000 people</div>' in h and '<div class="other pos">+500 jobs</div>' in h
+    assert 'data-person="zero-but-counted"' in h and "+50 people" in h
+    assert "-78,000 people" in client.get("/people/mix2").text
+    assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
