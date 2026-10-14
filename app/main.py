@@ -12,11 +12,15 @@ from . import db
 from .scoring import by_category, credit_label, effective_scale, fmt_pct, overall, score
 
 UNITS = {"people": ("people", "lives"), "jobs": ("jobs",), "climate": ("tCO2e",),
-         "nature": ("animals", "hectares"), "economy": ("USD",), "tech": None, "culture": None}
+         "nature": ("animals", "hectares"), "economy": "USD or CUR-YYYY", "tech": None, "culture": None}
 
 
 def _check_unit(category, unit):
     allowed = UNITS[category]
+    if category == "economy":
+        if unit != "USD" and (category, unit) not in rates():
+            raise HTTPException(422, "economy unit must be USD or a currency-year with an official rate, e.g. EUR-2019")
+        return
     if allowed is not None and unit not in allowed:
         raise HTTPException(422, f"unit for {category} must be one of {allowed}")
 
@@ -265,6 +269,7 @@ def ranking(include_estimates=True):
         ov = overall(es, r, include_estimates)
         people.append({"person_id": pid, "name": pretty(pid), "net": ov["overall"], "positive_pct": ov["positive_pct"],
                        "negative_pct": ov["negative_pct"], "not_convertible": ov["not_convertible"],
+                       "estimated": ov["estimated"],
                        "image_url": images.get(pid)})
     people.sort(key=lambda p: (-p["net"], p["person_id"]))
     return people
@@ -296,6 +301,7 @@ main{max-width:1100px;margin:0 auto;padding:36px 24px}
 .card:hover{background:#fff;transform:translateY(-2px);box-shadow:0 2px 10px rgba(0,0,0,.06)}
 .avatar{width:112px;height:112px;border-radius:50%;object-fit:cover;background:#e4e4e7;display:flex;align-items:center;justify-content:center;font-size:2em;font-weight:600;color:#71717a}
 .name{margin-top:12px;font-weight:500;text-align:center}
+.badge{background:#fde68a;color:#78350f;border-radius:4px;padding:1px 6px;font-size:.75em;font-weight:500}
 .score{margin-top:4px;font-weight:600;font-variant-numeric:tabular-nums}
 .net{margin-top:4px;color:#666;font-variant-numeric:tabular-nums}
 .empty{color:#777}
@@ -336,7 +342,8 @@ def ui_home(include_estimates: bool = True):
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
-                     f'<div class="name">{escape(p["name"])}</div><div class="score">{usd(p["net"])}</div>'
+                     f'<div class="name">{escape(p["name"])}</div><div class="score">{usd(p["net"])}'
+                     f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>'
                      f'<div class="net">{share_label(p)}</div></a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
@@ -457,7 +464,8 @@ def _cat_table(v):
     ov = v["overall"]
     return ("<h2>By category</h2><table class='cats'><tr><th>category</th><th>unit</th><th>positive</th><th>negative</th>"
             f"<th>net</th><th></th></tr>{rows}</table>"
-            f"<p>Overall score (USD, official rates only): <b>{usd(ov['overall'])}</b> · "
+            f"<p>Overall score (USD, official rates only): <b>{usd(ov['overall'])}</b>"
+            + (" <span class='badge'>estimate</span> (driven by estimate entries)" if ov["estimated"] else "") + " · " +
             f"<span style='color:#1a8f4c'>{fmt_pct(ov['positive_pct'])}</span> / "
             f"<span style='color:#c93a3a'>{fmt_pct(ov['negative_pct'])}</span>"
             + (f" · not convertible: {escape(', '.join(ov['not_convertible']))}" if ov["not_convertible"] else "")

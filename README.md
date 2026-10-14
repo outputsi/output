@@ -126,6 +126,9 @@ The person page shows per-category totals side by side. The overall score conver
 - `people/lives`: US DOT value of a statistical life, $14.2M (2025 base year).
 - `climate/tCO2e`: US EPA 2023 social cost of CO2, $190/tonne (2020 emissions, 2% discount rate, 2020 dollars).
 - `economy/USD`: 1:1.
+- `economy/EUR-2019`: Federal Reserve G.5A 2019 annual average, 1.1194 USD per euro. Non-USD amounts use unit `CUR-YYYY` (currency, year of the amount) and need an official Fed G.5A/H.10 or ECB rate for that year in `conversions`.
+
+People rescued from death count as lives saved (`people/lives`) when the sources say rescued or saved from death. Scores driven by estimate entries carry an "estimate" label on the homepage and person page.
 
 Categories without an official rate (people/people, jobs, nature, tech, culture) are shown but not included in the overall score, and are labeled "not convertible". The homepage ranks by overall score with green/red %, and hides people with nothing counted.
 

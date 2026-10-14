@@ -420,7 +420,7 @@ def test_categories_and_overall(client):
     h = client.get("/people/cat").text
     assert "By category" in h and "not convertible" in h
     assert "$28" in client.get("/").text
-    assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"}
+    assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD", "EUR-2019"}
     i = _approve(client, person_id="cat2", scale=7)
     r = client.post(f"/api/entries/{i}/category", json={"category": "economy", "unit": "USD", "reviewer_id": "r"})
     assert r.json()["category"] == "economy" and client.get("/api/people/cat2").json()["overall"]["overall"] == 7
@@ -435,3 +435,14 @@ def test_home_shows_nonconvertible_only_person(client):
 def test_usd_format():
     from app.main import usd
     assert usd(1.42e16) == "+$14,200T" and usd(-3.05e9) == "-$3.05B" and usd(0) == "$0"
+
+
+def test_estimate_label_and_currency(client):
+    _approve(client, person_id="estp", scale=3, unit="lives", is_estimate=True)
+    v = client.get("/api/people/estp").json()["overall"]
+    assert v["estimated"] is True
+    assert "estimate</span>" in client.get("/").text and "driven by estimate" in client.get("/people/estp").text
+    _approve(client, person_id="eur", scale=1000, direction=-1, category="economy", unit="EUR-2019")
+    assert client.get("/api/people/eur").json()["overall"]["overall"] == pytest.approx(-1119.4)
+    assert client.get("/api/people/eur").json()["overall"]["estimated"] is False
+    assert sub(client, category="economy", unit="XYZ-1900").status_code == 422

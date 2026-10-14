@@ -62,6 +62,8 @@ CONVERSIONS = [
      "https://www.epa.gov/system/files/documents/2023-12/epa%5Fscghg%5F2023%5Freport%5Ffinal.pdf",
      "US EPA 2023 social cost of CO2, $190/tonne (2020 emissions, 2% near-term discount, 2020 dollars)."),
     ("economy", "USD", 1.0, "", "Already USD; nominal dollars of the year stated, no inflation adjustment."),
+    ("economy", "EUR-2019", 1.1194, "https://www.federalreserve.gov/releases/g5a/20200102/",
+     "Federal Reserve G.5A annual average 2019: 1.1194 USD per euro."),
 ]
 
 

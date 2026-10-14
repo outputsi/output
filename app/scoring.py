@@ -65,6 +65,8 @@ def overall(entries, rates, include_estimates=True):
     Categories without a rate are listed in not_convertible and excluded."""
     pos = neg = 0.0
     not_conv = []
+    estimated = any(e.get("status") == "approved" and e.get("is_estimate") and include_estimates
+                    and (e.get("category") or "people", e.get("unit") or "people") in rates for e in entries)
     for key, sc in by_category(entries, include_estimates).items():
         if key not in rates:
             if sc["positive_total"] or sc["negative_total"]:
@@ -76,4 +78,4 @@ def overall(entries, rates, include_estimates=True):
     return {"overall": pos - neg, "overall_positive": pos, "overall_negative": neg,
             "positive_pct": pos / total * 100 if total else None,
             "negative_pct": neg / total * 100 if total else None,
-            "not_convertible": sorted(not_conv)}
+            "not_convertible": sorted(not_conv), "estimated": estimated}
