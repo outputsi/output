@@ -381,6 +381,10 @@ def tab_ranking(tab, include_estimates=True):
                 lines.append(("+", fmt(pos)))
             if neg:
                 lines.append(("-", fmt(-neg)))
+        if cat == "economy" and lines:
+            tp = sum(sc["positive_total"] * r.get(k, 1.0) for k, sc in by_category(es, include_estimates).items())
+            tn = sum(sc["negative_total"] * r.get(k, 1.0) for k, sc in by_category(es, include_estimates).items())
+            lines = ([("+", usd(tp))] if tp else []) + ([("-", usd(-tn))] if tn else [])
         if not lines:
             continue
         units = {e.get("unit") for e in es}
