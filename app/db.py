@@ -76,6 +76,8 @@ CONVERSIONS = [
      "Federal Reserve G.5A annual average 2013: 1.3281 USD per euro."),
     ("economy", "EUR-2021", 1.183, "https://www.federalreserve.gov/releases/g5a/20220103/",
      "Federal Reserve G.5A annual average 2021: 1.183 USD per euro."),
+    ("economy", "EUR-2022", 1.0534, "https://www.federalreserve.gov/releases/g5a/20250106/",
+     "Federal Reserve G.5A annual average 2022: 1.0534 USD per euro."),
     ("economy", "EUR-2023", 1.0817, "https://www.federalreserve.gov/releases/g5a/20250106/",
      "Federal Reserve G.5A annual average 2023: 1.0817 USD per euro."),
     ("economy", "EUR-2024", 1.082, "https://www.federalreserve.gov/releases/g5a/20250106/",
