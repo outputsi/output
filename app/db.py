@@ -64,6 +64,10 @@ CONVERSIONS = [
     ("economy", "USD", 1.0, "", "Already USD; nominal dollars of the year stated, no inflation adjustment."),
     ("economy", "EUR-2019", 1.1194, "https://www.federalreserve.gov/releases/g5a/20200102/",
      "Federal Reserve G.5A annual average 2019: 1.1194 USD per euro."),
+    ("economy", "EUR-2016", 1.1072, "https://www.federalreserve.gov/releases/g5a/20170104/",
+     "Federal Reserve G.5A annual average 2016: 1.1072 USD per euro."),
+    ("economy", "EUR-2020", 1.1410, "https://www.federalreserve.gov/releases/g5a/20210104/",
+     "Federal Reserve G.5A annual average 2020: 1.1410 USD per euro."),
 ]
 
 
