@@ -62,6 +62,8 @@ Everything tied to a person counts, including their company and foundation outco
 
 Very trusted = peer-reviewed journals, government/official bodies and inquiries, national archives, major museums/memorials, university presses, Nobel, main Britannica, major newspapers of record.
 
+Lesser tier: sports dailies (AS, Marca, Mundo Deportivo, Sport, A Bola, Record, L'Équipe, Gazzetta and similar). A claim that relies on any of them needs 3 independent sources, at least one being a very trusted non-sports outlet or a primary statement (family, hospital, official), verified by full text. All other claims keep the 2-very-trusted-source rule.
+
 ## Scoring (pure function `app/scoring.py`, no stored totals)
 
 Over approved entries only (`status = 'approved'`), using effective scale, excluding estimates unless included:
