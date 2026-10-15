@@ -121,7 +121,7 @@ Output measures a person's total impact, not only people helped or harmed. Each 
 | economy | `USD` (nominal dollars of the year stated; no inflation adjustment) |
 | tech, culture | any measurable unit the source states |
 
-All sourcing rules above apply to every category. Economy: fines count as negative only with an official finding; settlements without one stay unproven. Jobs count as positive when an official filing and a major outlet both state the number.
+All sourcing rules above apply to every category. Economy: fines count as negative only with an official finding; settlements without one stay unproven. Court-ordered civil damages count like fines. First-instance rulings count unless reversed or stayed (noted in the entry). Vaccine/aid lives-saved figures from a multi-donor body count for a funder only via a sourced funding share (`sourced_share`); otherwise unproven. Duplicates are never deleted: marked unproven with 'duplicate of #N'. Jobs count as positive when an official filing and a major outlet both state the number.
 
 The person page shows per-category totals side by side. The overall score converts categories to USD **only** with officially published rates, stored in the `conversions` table with their source (`GET /api/conversions`):
 
