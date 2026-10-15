@@ -68,6 +68,20 @@ CONVERSIONS = [
      "Federal Reserve G.5A annual average 2016: 1.1072 USD per euro."),
     ("economy", "EUR-2020", 1.1410, "https://www.federalreserve.gov/releases/g5a/20210104/",
      "Federal Reserve G.5A annual average 2020: 1.1410 USD per euro."),
+    ("economy", "EUR-2004", 1.2438, "https://www.federalreserve.gov/releases/g5a/20050103/",
+     "Federal Reserve G.5A annual average 2004: 1.2438 USD per euro."),
+    ("economy", "EUR-2008", 1.4726, "https://www.federalreserve.gov/releases/g5a/20090102/",
+     "Federal Reserve G.5A annual average 2008: 1.4726 USD per euro."),
+    ("economy", "EUR-2013", 1.3281, "https://www.federalreserve.gov/releases/g5a/20150102/",
+     "Federal Reserve G.5A annual average 2013: 1.3281 USD per euro."),
+    ("economy", "EUR-2021", 1.183, "https://www.federalreserve.gov/releases/g5a/20220103/",
+     "Federal Reserve G.5A annual average 2021: 1.183 USD per euro."),
+    ("economy", "EUR-2023", 1.0817, "https://www.federalreserve.gov/releases/g5a/20250106/",
+     "Federal Reserve G.5A annual average 2023: 1.0817 USD per euro."),
+    ("economy", "EUR-2024", 1.082, "https://www.federalreserve.gov/releases/g5a/20250106/",
+     "Federal Reserve G.5A annual average 2024: 1.082 USD per euro."),
+    ("economy", "EUR-2025", 1.1306, "https://www.federalreserve.gov/releases/g5a/20260105/",
+     "Federal Reserve G.5A annual average 2025: 1.1306 USD per euro."),
 ]
 
 
