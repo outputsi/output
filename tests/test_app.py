@@ -75,7 +75,7 @@ def test_invalid_direction(client):
 
 
 def test_ui_smoke(client):
-    assert client.get("/").status_code == 200
+    assert client.get("/?tab=overall").status_code == 200
     r = client.post("/submit", data={"person_id": "u", "action": "a", "source": "https://s.org",
                                      "scale": "3", "direction": "1"})
     assert r.status_code == 200
@@ -167,7 +167,7 @@ def test_home_ranking_order(client):
     _approve(client, person_id="top-person", scale=100, category="economy", unit="USD")
     _approve(client, person_id="neg-one", scale=5, direction=-1, category="economy", unit="USD")
     sub(client, person_id="pending-only", scale=1000)  # pending counts 0 -> hidden
-    r = client.get("/")
+    r = client.get("/?tab=overall")
     assert r.status_code == 200
     h = r.text
     order = [h.index(f'data-person="{p}"') for p in ("top-person", "low-guy", "neg-one")]
@@ -177,7 +177,7 @@ def test_home_ranking_order(client):
 
 def test_home_placeholder_initials(client):
     _approve(client, person_id="jonas-salk")
-    h = client.get("/").text
+    h = client.get("/?tab=overall").text
     assert '<div class="avatar placeholder">JS</div>' in h and "Jonas Salk" in h
 
 
@@ -186,10 +186,10 @@ def test_set_person_image(client):
     r = client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg"})
     assert r.status_code == 200 and r.json()["image_url"] == "https://img.example/js.jpg"
     client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/2.jpg"})
-    h = client.get("/").text
+    h = client.get("/?tab=overall").text
     assert '<img class="avatar" src="https://img.example/2.jpg"' in h and "avatar placeholder" not in h
     client.post("/people-image", data={"person_id": "jonas-salk", "image_url": ""})
-    assert "avatar placeholder" in client.get("/").text
+    assert "avatar placeholder" in client.get("/?tab=overall").text
 
 
 def test_submit_page_moved(client):
@@ -217,7 +217,7 @@ def test_pct_display(client):
     sub(client, person_id="nobody", scale=1)
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
     assert client.get("/api/people/nobody").json()["positive_pct"] is None
-    h = client.get("/").text
+    h = client.get("/?tab=overall").text
     assert '<span class="pos">100%</span> · <span class="neg">0%</span>' in h
     assert 'data-person="nobody"' not in h and "9,237.5" not in h and "bar" not in h
     t = client.get("/people/jonas-salk").text
@@ -235,7 +235,7 @@ def test_home_90_10_bar(client):
     _approve(client, person_id="mixed", scale=90, category="climate", unit="tCO2e")
     _approve(client, person_id="mixed", scale=10, direction=-1, category="climate", unit="tCO2e")
     assert client.get("/api/people/mixed").json()["overall"]["negative_pct"] == pytest.approx(10)
-    h = client.get("/").text
+    h = client.get("/?tab=overall").text
     assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
 
 
@@ -294,9 +294,9 @@ def test_estimate_toggle_api_and_pages(client):
     assert "Even split 1/4" in h and "est.</span>" in h and "Estimates (excluded)" not in h
     assert "include_estimates=0" in h
     assert "Estimates (excluded)" in client.get("/people/pp?include_estimates=0").text
-    home = client.get("/").text
-    assert 'href="/?include_estimates=0"' in home and "%" in home
-    assert 'href="/people/pp?include_estimates=0"' in client.get("/?include_estimates=0").text
+    home = client.get("/?tab=overall").text
+    assert 'href="/?tab=overall&include_estimates=0"' in home and "%" in home
+    assert 'href="/people/pp?include_estimates=0"' in client.get("/?tab=overall&include_estimates=0").text
 
 
 def test_approve_unproven_estimate(client):
@@ -390,7 +390,7 @@ def test_make_primary_source(client):
 def test_home_hides_zero_uncounted_and_org_reapprove(client):
     sub(client, person_id="nobody", scale=5)
     _approve(client, person_id="somebody", scale=5)
-    h = client.get("/").text
+    h = client.get("/?tab=overall").text
     assert 'data-person="nobody"' not in h and 'data-person="somebody"' in h
     assert client.get("/api/people/nobody").status_code == 200
     e = sub(client, person_id="nobody", scale=30).json()["id"]
@@ -400,7 +400,7 @@ def test_home_hides_zero_uncounted_and_org_reapprove(client):
     assert r.status_code == 200
     assert client.post(f"/api/entries/{e}/reapprove", json={"reviewer_id": "r"}).json()["status"] == "approved"
     assert client.post(f"/api/entries/{e}/reapprove", json={"reviewer_id": "r"}).status_code == 409
-    assert 'data-person="nobody"' in client.get("/").text
+    assert 'data-person="nobody"' in client.get("/?tab=overall").text
     assert "Organization" in client.get("/people/nobody").text
 
 
@@ -419,7 +419,7 @@ def test_categories_and_overall(client):
     assert sub(client, category="climate", unit="USD").status_code == 422
     h = client.get("/people/cat").text
     assert "By category" in h and "not convertible" in h
-    assert "$28" in client.get("/").text
+    assert "$28" in client.get("/?tab=overall").text
     assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
     r = client.post(f"/api/entries/{i}/category", json={"category": "economy", "unit": "USD", "reviewer_id": "r"})
@@ -429,7 +429,7 @@ def test_categories_and_overall(client):
 
 def test_home_shows_nonconvertible_only_person(client):
     _approve(client, person_id="jobsonly", scale=10, category="jobs", unit="jobs")
-    assert 'data-person="jobsonly"' in client.get("/").text
+    assert 'data-person="jobsonly"' in client.get("/?tab=overall").text
 
 
 def test_usd_format():
@@ -441,7 +441,7 @@ def test_estimate_label_and_currency(client):
     _approve(client, person_id="estp", scale=3, unit="lives", is_estimate=True)
     v = client.get("/api/people/estp").json()["overall"]
     assert v["estimated"] is True
-    assert "estimate</span>" in client.get("/").text and "driven by estimate" in client.get("/people/estp").text
+    assert "estimate</span>" in client.get("/?tab=overall").text and "driven by estimate" in client.get("/people/estp").text
     _approve(client, person_id="eur", scale=1000, direction=-1, category="economy", unit="EUR-2019")
     assert client.get("/api/people/eur").json()["overall"]["overall"] == pytest.approx(-1119.4)
     assert client.get("/api/people/eur").json()["overall"]["estimated"] is False
@@ -453,8 +453,23 @@ def test_nonconvertible_lines_shown(client):
     _approve(client, person_id="mix2", scale=78000, direction=-1)
     _approve(client, person_id="mix2", scale=500, category="jobs", unit="jobs")
     _approve(client, person_id="zero-but-counted", scale=50)
-    h = client.get("/").text
+    h = client.get("/?tab=overall").text
     assert '<div class="other neg">-78,000 people</div>' in h and '<div class="other pos">+500 jobs</div>' in h
     assert 'data-person="zero-but-counted"' in h and "+50 people" in h
     assert "-78,000 people" in client.get("/people/mix2").text
     assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
+
+
+def test_category_tabs(client):
+    _approve(client, person_id="saver", scale=10, direction=1, category="people", unit="lives")
+    _approve(client, person_id="killer", scale=3, direction=-1, category="people", unit="lives")
+    _approve(client, person_id="employer", scale=500, direction=1, category="jobs", unit="jobs")
+    h = client.get("/").text  # default tab: lives
+    assert 'class="tab active" href="/?tab=lives"' in h
+    assert h.index('data-person="saver"') < h.index('data-person="killer"')
+    assert 'data-person="employer"' not in h and "+10 lives" in h and "-3 lives" in h
+    j = client.get("/?tab=jobs").text
+    assert 'data-person="employer"' in j and 'data-person="saver"' not in j and "+500 jobs" in j
+    assert [p["person_id"] for p in client.get("/api/ranking?tab=lives").json()] == ["saver", "killer"]
+    assert 'data-person="employer"' in client.get("/?tab=overall").text
+    assert client.get("/api/ranking?tab=bogus").status_code == 422

@@ -290,6 +290,7 @@ def ui_person_image(person_id: str = Form(...), image_url: str = Form("")):
 
 
 HOME_CSS = """
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.tab{padding:6px 12px;border:1px solid #ccc;border-radius:16px;text-decoration:none;color:inherit}.tab.active{background:#222;color:#fff;border-color:#222}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#222;background:#fafafa}
 .top{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid #eee;background:#fff}
@@ -349,13 +350,73 @@ def share_label(p):
             f'<span class="neg">{fmt_pct(p["negative_pct"])}</span>')
 
 
+TABS = [("lives", "Lives", "people", "lives"), ("people", "People", "people", "people"), ("jobs", "Jobs", "jobs", None),
+        ("economy", "Economy $", "economy", None), ("climate", "Climate", "climate", None),
+        ("nature", "Nature", "nature", None), ("overall", "Overall $", None, None)]
+DEFAULT_TAB = "lives"
+
+
+def tab_ranking(tab, include_estimates=True):
+    """People with counted entries in the tab's category, sorted by net in its own unit
+    (economy: converted to USD with official rates). Returns [{person_id, name, net, lines, estimated, image_url}]."""
+    _, _, cat, unit = next(t for t in TABS if t[0] == tab)
+    r = rates()
+    images = db.people_images()
+    by_person = {}
+    for e in db.all_entries():
+        if e["status"] != "approved" or (not include_estimates and e.get("is_estimate")):
+            continue
+        c, u = e.get("category") or "people", e.get("unit") or "people"
+        if c == cat and (unit is None or u == unit):
+            by_person.setdefault(e["person_id"], []).append(e)
+    out = []
+    for pid, es in by_person.items():
+        net, lines = 0.0, []
+        for (c, u), sc in sorted(by_category(es, include_estimates).items()):
+            k = r.get((c, u), 1.0) if cat == "economy" else 1.0
+            pos, neg = sc["positive_total"] * k, sc["negative_total"] * k
+            net += pos - neg
+            fmt = usd if cat == "economy" else (lambda v, u=u: f"{'+' if v > 0 else ''}{v:,.0f} {u}")
+            if pos:
+                lines.append(("+", fmt(pos)))
+            if neg:
+                lines.append(("-", fmt(-neg)))
+        if not lines:
+            continue
+        units = {e.get("unit") for e in es}
+        label = usd(net) if cat == "economy" else (f"{net:+,.0f} {units.pop()}" if len(units) == 1 else "")
+        out.append({"person_id": pid, "name": pretty(pid), "net": net, "label": label, "lines": lines,
+                    "estimated": any(e.get("is_estimate") for e in es), "image_url": images.get(pid)})
+    out.sort(key=lambda p: (-p["net"], p["person_id"]))
+    return out
+
+
+@app.get("/api/ranking")
+def api_ranking(tab: str = DEFAULT_TAB, include_estimates: bool = True):
+    if tab not in {t[0] for t in TABS}:
+        raise HTTPException(422, "unknown tab")
+    return ranking(include_estimates) if tab == "overall" else tab_ranking(tab, include_estimates)
+
+
 @app.get("/", response_class=HTMLResponse)
-def ui_home(include_estimates: bool = True):
+def ui_home(include_estimates: bool = True, tab: str = DEFAULT_TAB):
+    if tab not in {t[0] for t in TABS}:
+        tab = DEFAULT_TAB
     cards = []
     q = "" if include_estimates else "?include_estimates=0"
-    toggle = ('<a href="/?include_estimates=0">Exclude estimates</a>' if include_estimates
-              else '<a href="/">Include estimates</a>')
-    for p in ranking(include_estimates):
+    ex = "" if include_estimates else "&include_estimates=0"
+    toggle = (f'<a href="/?tab={tab}&include_estimates=0">Exclude estimates</a>' if include_estimates
+              else f'<a href="/?tab={tab}">Include estimates</a>')
+    tabs = "".join(f'<a class="tab{" active" if k == tab else ""}" href="/?tab={k}{ex}">{lbl}</a>' for k, lbl, _, _ in TABS)
+    if tab != "overall":
+        for p in tab_ranking(tab, include_estimates):
+            pid = escape(p["person_id"])
+            av = (f'<img class="avatar" src="{escape(p["image_url"])}" alt="{escape(p["name"])}">' if p["image_url"]
+                  else f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>')
+            cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
+                         f'<div class="name">{escape(p["name"])}</div><div class="score">{escape(p["label"])}'
+                         f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>{other_html(p["lines"])}</a>')
+    for p in (ranking(include_estimates) if tab == "overall" else []):
         pid = escape(p["person_id"])
         if p["image_url"]:
             av = f'<img class="avatar" src="{escape(p["image_url"])}" alt="{escape(p["name"])}">'
@@ -365,11 +426,11 @@ def ui_home(include_estimates: bool = True):
                      f'<div class="name">{escape(p["name"])}</div><div class="score">{usd(p["net"])}'
                      f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>'
                      f'<div class="net">{share_label(p)}</div>{other_html(p["other"])}</a>')
-    grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No people yet.</p>'
+    grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
 <body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/submit">Submit</a><a href="/queue">Queue</a></nav></header>
-<main><p class="toggle">{toggle}</p>{grid}
+<main><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}
 <details><summary>Set a person's image</summary>
 <form method="post" action="/people-image"><input name="person_id" placeholder="person_id" required>
 <input name="image_url" placeholder="https://... (blank to clear)" size="40"><button>Save</button></form></details>

@@ -108,6 +108,10 @@ If `DATABASE_URL` is set (e.g. Render's `postgres://user:pass@host:5432/db`; `po
 
 Migration: on startup `init()` adds the `status` column to an existing `entries` table if missing (Postgres `ADD COLUMN IF NOT EXISTS`; SQLite via `PRAGMA table_info`) and backfills `status='approved'` where `reviewed_at IS NOT NULL`.
 
+## Homepage tabs
+
+The homepage ranks people per category in tabs: Lives (default, `people/lives`), People, Jobs, Economy $ (all economy units converted with the official rates), Climate, Nature, and Overall $ (USD score across convertible categories). Each tab sorts by that category's net in its own unit, shows green/red totals, and lists only people with counted entries in it. Links are shareable: `/?tab=jobs`; API: `/api/ranking?tab=jobs`. Lives is the default because it is the only unit with an official rate and the most counted people. Person pages keep all categories.
+
 ## Categories, units and the overall score
 
 Output measures a person's total impact, not only people helped or harmed. Each entry has a `category` and `unit` (existing entries default to `people`/`people`):
