@@ -423,7 +423,7 @@ def test_categories_and_overall(client):
     h = client.get("/people/cat").text
     assert "By category" in h and "not convertible" in h
     assert "$28" in client.get("/?tab=overall").text
-    assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
+    assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
     r = client.post(f"/api/entries/{i}/category", json={"category": "economy", "unit": "USD", "reviewer_id": "r"})
     assert r.json()["category"] == "economy" and client.get("/api/people/cat2").json()["overall"]["overall"] == 7
