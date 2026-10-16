@@ -427,6 +427,8 @@ def tab_ranking(tab, include_estimates=True):
     rank_unit = next((u for u in CULTURE_RANK_UNITS if u in have), CULTURE_RANK_UNITS[-1])
     out = []
     for pid, es in by_person.items():
+        if cat == "culture" and not any(e.get("unit") == rank_unit for e in es):
+            continue  # no entry in the ranking unit: shown on the person page only
         net, lines = 0.0, []
         for (c, u), sc in sorted(by_category(es, include_estimates).items()):
             k = r.get((c, u), 1.0) if cat == "economy" else 1.0

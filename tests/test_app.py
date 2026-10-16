@@ -495,6 +495,9 @@ def test_culture_tab_ranks_by_certified_units(client):
     r = client.get("/api/ranking?tab=culture").json()
     assert [p["person_id"] for p in r] == ["seller", "winner"] and r[1]["net"] == 50
     assert "+30 grammys" in client.get("/?tab=culture").text
+    _approve(client, person_id="recordman", scale=1, direction=1, category="culture", unit="guinness-records")
+    assert "recordman" not in [p["person_id"] for p in client.get("/api/ranking?tab=culture").json()]
+    assert client.get("/api/people/recordman").json()["categories"][0]["unit"] == "guinness-records"
     bad = client.post("/api/entries", json={"person_id": "x", "action": "a", "source": "https://e.org", "scale": 1,
                                             "direction": 1, "category": "culture", "unit": "influence"})
     assert bad.status_code == 422
