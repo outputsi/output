@@ -218,6 +218,17 @@ def api_add_source(entry_id: int, body: SourceIn):
     return _with_sources([dict(e)])[0]
 
 
+class QuoteIn(BaseModel):
+    quote: str = Field(min_length=1)
+
+
+@app.post("/api/entries/{entry_id}/sources/{source_id}/quote")
+def api_set_source_quote(entry_id: int, source_id: int, body: QuoteIn):
+    if not db.set_source_quote(entry_id, source_id, body.quote.strip()):
+        raise HTTPException(404, "source not found")
+    return api_list_sources(entry_id)
+
+
 @app.get("/api/entries/{entry_id}/sources")
 def api_list_sources(entry_id: int):
     e = db.get_entry(entry_id)

@@ -369,6 +369,14 @@ def add_entry_source(entry_id, url, quote, added_by, make_primary=False):
     return get_entry(entry_id)
 
 
+def set_source_quote(entry_id, source_id, quote):
+    """Correct the quote of one extra source; returns False if it does not belong to the entry."""
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("UPDATE entry_sources SET quote=? WHERE id=? AND entry_id=?", ph), (quote, source_id, entry_id))
+        return cur.rowcount > 0
+
+
 def entry_sources(entry_ids=None):
     """Map entry_id -> list of extra sources."""
     _ensure()

@@ -383,6 +383,14 @@ def test_extra_sources(client):
     assert client.post("/api/entries/999/sources", json={"url": "u", "reviewer_id": "r"}).status_code == 404
 
 
+def test_correct_source_quote(client):
+    i = sub(client).json()["id"]
+    sid = client.post(f"/api/entries/{i}/sources", json={"url": "https://a.example", "quote": "old", "reviewer_id": "r"}).json()["extra_sources"][0]["id"]
+    r = client.post(f"/api/entries/{i}/sources/{sid}/quote", json={"quote": "new"})
+    assert r.json()["extra_sources"][0]["quote"] == "new"
+    assert client.post(f"/api/entries/{i+1}/sources/{sid}/quote", json={"quote": "x"}).status_code == 404
+
+
 def test_make_primary_source(client):
     i = sub(client).json()["id"]
     r = client.post(f"/api/entries/{i}/sources", json={"url": "https://better.example", "reviewer_id": "r", "make_primary": True})
