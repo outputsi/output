@@ -148,3 +148,7 @@ Each person has a `published` flag (`POST /api/people/{id}/publish {"published":
 
 ### Admin key
 When the `ADMIN_KEY` env var is set, every POST except submitting pending entries (`/api/entries`, `/submit`, `/import`) and any `?preview=1` request needs the key, as header `X-Admin-Key` or query `admin_key=`. The review queue keeps the key in its form links when opened as `/queue?admin_key=...`.
+
+
+### SEC filings and jobs
+An official SEC filing (10-K, 8-K, etc.) alone is enough for a company's jobs/employee count. It is not enough for self-reported impact claims.
