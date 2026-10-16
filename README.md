@@ -141,4 +141,4 @@ Categories without an official rate (people/people, jobs, nature, tech, culture)
 API: entries accept `category` and `unit`; `POST /api/entries/{id}/category` `{category, unit, reviewer_id}` reclassifies an entry.
 
 ### Culture tab
-Category `culture`, units limited to `certified-units` (RIAA Gold & Platinum certified units), `grammys` (Recording Academy wins) and `guinness-records`. No USD rate, so culture never enters Overall. The tab ranks by `certified-units` only; other units are shown as lines but never summed with it. No judgment metrics (e.g. "influence"). Same 2-source policy; the certifier's own database is the primary record.
+Category `culture`, units limited to `certified-units` (RIAA Gold & Platinum certified units), `grammys` (Recording Academy wins) and `guinness-records`. No USD rate, so culture never enters Overall. The tab ranks by `grammys` until any `certified-units` entry is approved, then by `certified-units` only; other units are shown as lines but never summed with it. No judgment metrics (e.g. "influence"). Same 2-source policy; the certifier's own database is the primary record.

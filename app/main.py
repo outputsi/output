@@ -356,7 +356,7 @@ TABS = [("lives", "Lives", "people", "lives"), ("people", "People", "people", "p
         ("nature", "Nature", "nature", None),
         ("culture", "Culture", "culture", None), ("overall", "Overall $", None, None)]
 DEFAULT_TAB = "lives"
-CULTURE_RANK_UNIT = "certified-units"  # culture ranks by RIAA certified units; other units shown, not summed
+CULTURE_RANK_UNITS = ("certified-units", "grammys")  # rank by certified units once any are approved, else Grammys
 
 
 def tab_ranking(tab, include_estimates=True):
@@ -372,13 +372,15 @@ def tab_ranking(tab, include_estimates=True):
         c, u = e.get("category") or "people", e.get("unit") or "people"
         if c == cat and (unit is None or u == unit):
             by_person.setdefault(e["person_id"], []).append(e)
+    have = {e.get("unit") for es in by_person.values() for e in es}
+    rank_unit = next((u for u in CULTURE_RANK_UNITS if u in have), CULTURE_RANK_UNITS[-1])
     out = []
     for pid, es in by_person.items():
         net, lines = 0.0, []
         for (c, u), sc in sorted(by_category(es, include_estimates).items()):
             k = r.get((c, u), 1.0) if cat == "economy" else 1.0
             pos, neg = sc["positive_total"] * k, sc["negative_total"] * k
-            if cat != "culture" or u == CULTURE_RANK_UNIT:
+            if cat != "culture" or u == rank_unit:
                 net += pos - neg
             fmt = usd if cat == "economy" else (lambda v, u=u: f"{'+' if v > 0 else ''}{v:,.0f} {u}")
             if pos:
@@ -392,7 +394,7 @@ def tab_ranking(tab, include_estimates=True):
         if not lines:
             continue
         units = {e.get("unit") for e in es}
-        label = usd(net) if cat == "economy" else f"{net:+,.0f} {CULTURE_RANK_UNIT}" if cat == "culture" else (f"{net:+,.0f} {units.pop()}" if len(units) == 1 else "")
+        label = usd(net) if cat == "economy" else f"{net:+,.0f} {rank_unit}" if cat == "culture" else (f"{net:+,.0f} {units.pop()}" if len(units) == 1 else "")
         out.append({"person_id": pid, "name": pretty(pid), "net": net, "label": label, "lines": lines,
                     "estimated": any(e.get("is_estimate") for e in es), "image_url": images.get(pid)})
     out.sort(key=lambda p: (-p["net"], p["person_id"]))

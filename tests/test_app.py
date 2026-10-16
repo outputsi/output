@@ -476,9 +476,11 @@ def test_category_tabs(client):
 
 
 def test_culture_tab_ranks_by_certified_units(client):
+    _approve(client, person_id="winner", scale=30, direction=1, category="culture", unit="grammys")
+    _approve(client, person_id="seller", scale=2, direction=1, category="culture", unit="grammys")
+    assert [p["net"] for p in client.get("/api/ranking?tab=culture").json()] == [30, 2]  # Grammys until certified units exist
     _approve(client, person_id="seller", scale=100, direction=1, category="culture", unit="certified-units")
     _approve(client, person_id="winner", scale=50, direction=1, category="culture", unit="certified-units")
-    _approve(client, person_id="winner", scale=30, direction=1, category="culture", unit="grammys")
     r = client.get("/api/ranking?tab=culture").json()
     assert [p["person_id"] for p in r] == ["seller", "winner"] and r[1]["net"] == 50
     assert "+30 grammys" in client.get("/?tab=culture").text
