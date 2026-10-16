@@ -1,11 +1,14 @@
 import csv
 import io
 import json
+import os
+import secrets
+from urllib.parse import quote
 from html import escape
 from typing import Literal
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from . import db
@@ -30,6 +33,23 @@ def rates():
     return {(c["category"], c["unit"]): float(c["usd_per_unit"]) for c in db.conversions()}
 
 app = FastAPI(title="Output")
+
+# Writes (except submitting pending entries) and ?preview=1 need the admin key when ADMIN_KEY is set.
+OPEN_POSTS = {"/api/entries", "/submit", "/import"}
+
+
+def _key(request):
+    return request.headers.get("x-admin-key") or request.query_params.get("admin_key") or ""
+
+
+@app.middleware("http")
+async def admin_guard(request: Request, call_next):
+    want = os.environ.get("ADMIN_KEY")
+    needs = (request.method == "POST" and request.url.path not in OPEN_POSTS) or \
+        request.query_params.get("preview", "").lower() in ("1", "true")
+    if want and needs and not secrets.compare_digest(_key(request), want):
+        return JSONResponse({"detail": "admin key required"}, status_code=401)
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -528,13 +548,15 @@ async def ui_import(json_text: str = Form(""), csv_file: UploadFile | None = Fil
 
 
 @app.get("/queue", response_class=HTMLResponse)
-def ui_queue():
+def ui_queue(request: Request):
+    k = _key(request)
+    q = f"?admin_key={quote(k)}" if k else ""
     rows = "".join(
         f"<tr><td>{e['id']}</td><td>{escape(e['person_id'])}</td><td>{escape(e['action'])}</td>"
         f"<td>{sources_cell(e)}</td><td>{e['scale']}</td><td>{e['direction']:+d}</td><td>{e['created_at']}</td>"
-        f"<td><form method='post' action='/queue/{e['id']}/approve'><input name='reviewer_id' placeholder='reviewer_id' required>"
+        f"<td><form method='post' action='/queue/{e['id']}/approve{q}'><input name='reviewer_id' placeholder='reviewer_id' required>"
         f"<button>Approve</button></form>"
-        f"<form method='post' action='/queue/{e['id']}/mark-unproven'><input name='reviewer_id' placeholder='reviewer_id' required>"
+        f"<form method='post' action='/queue/{e['id']}/mark-unproven{q}'><input name='reviewer_id' placeholder='reviewer_id' required>"
         f"<button>Mark unproven</button></form></td></tr>"
         for e in _with_sources([dict(e) for e in db.queue()])
     ) or "<tr><td colspan=8>Queue is empty.</td></tr>"
@@ -543,15 +565,15 @@ def ui_queue():
 
 
 @app.post("/queue/{entry_id}/approve")
-def ui_approve(entry_id: int, reviewer_id: str = Form(...)):
+def ui_approve(request: Request, entry_id: int, reviewer_id: str = Form(...)):
     do_approve(entry_id, reviewer_id)
-    return RedirectResponse("/queue", status_code=303)
+    return RedirectResponse("/queue" + (f"?admin_key={quote(_key(request))}" if _key(request) else ""), status_code=303)
 
 
 @app.post("/queue/{entry_id}/mark-unproven")
-def ui_mark_unproven(entry_id: int, reviewer_id: str = Form(...)):
+def ui_mark_unproven(request: Request, entry_id: int, reviewer_id: str = Form(...)):
     do_mark_unproven(entry_id, reviewer_id)
-    return RedirectResponse("/queue", status_code=303)
+    return RedirectResponse("/queue" + (f"?admin_key={quote(_key(request))}" if _key(request) else ""), status_code=303)
 
 
 @app.get("/person")

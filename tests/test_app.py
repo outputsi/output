@@ -521,3 +521,16 @@ def test_migration_publishes_existing_people(tmp_path, monkeypatch):
     db._initialized.discard(path)
     db.init()
     assert "old-guy" in db.published_ids()
+
+
+def test_admin_key_guard(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_KEY", "k1")
+    i = sub(client, person_id="guarded").json()["id"]  # submitting pending entries stays open
+    assert client.post(f"/api/entries/{i}/approve", json={"reviewer_id": "r"}).status_code == 401
+    assert client.post("/api/people/guarded/publish", json={"published": True}).status_code == 401
+    assert client.get("/api/people/guarded?preview=1").status_code == 401
+    assert client.post(f"/api/entries/{i}/approve", json={"reviewer_id": "r"}, headers={"X-Admin-Key": "k1"}).status_code == 200
+    assert client.get("/api/people/guarded?preview=1&admin_key=k1").status_code == 200
+    j = sub(client, person_id="guarded").json()["id"]
+    r = client.post(f"/queue/{j}/approve?admin_key=k1", data={"reviewer_id": "r"}, follow_redirects=False)
+    assert r.status_code == 303 and "admin_key=k1" in r.headers["location"]

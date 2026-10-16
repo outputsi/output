@@ -145,3 +145,6 @@ Category `culture`, units limited to `certified-units` (RIAA Gold & Platinum cer
 
 ### Publishing
 Each person has a `published` flag (`POST /api/people/{id}/publish {"published": true|false}`). Only published people appear on homepage tabs and `/api/ranking`; unpublished person pages return 404 unless `?preview=1` (reviewer preview; there is no login). Everyone who existed when the flag was added was marked published. New names stay unpublished until both sides are researched.
+
+### Admin key
+When the `ADMIN_KEY` env var is set, every POST except submitting pending entries (`/api/entries`, `/submit`, `/import`) and any `?preview=1` request needs the key, as header `X-Admin-Key` or query `admin_key=`. The review queue keeps the key in its form links when opened as `/queue?admin_key=...`.
