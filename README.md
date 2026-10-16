@@ -139,3 +139,6 @@ People rescued from death count as lives saved (`people/lives`) when the sources
 Categories without an official rate (people/people, jobs, nature, tech, culture) are shown but not included in the overall score, and are labeled "not convertible". The homepage ranks by overall score with green/red %, and hides people with nothing counted.
 
 API: entries accept `category` and `unit`; `POST /api/entries/{id}/category` `{category, unit, reviewer_id}` reclassifies an entry.
+
+### Culture tab
+Category `culture`, units limited to `certified-units` (RIAA Gold & Platinum certified units), `grammys` (Recording Academy wins) and `guinness-records`. No USD rate, so culture never enters Overall. The tab ranks by `certified-units` only; other units are shown as lines but never summed with it. No judgment metrics (e.g. "influence"). Same 2-source policy; the certifier's own database is the primary record.

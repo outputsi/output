@@ -12,7 +12,8 @@ from . import db
 from .scoring import by_category, credit_label, effective_scale, fmt_pct, overall, score
 
 UNITS = {"people": ("people", "lives"), "jobs": ("jobs",), "climate": ("tCO2e",),
-         "nature": ("animals", "hectares"), "economy": "USD or CUR-YYYY", "tech": None, "culture": None}
+         "nature": ("animals", "hectares"), "economy": "USD or CUR-YYYY", "tech": None,
+         "culture": ("certified-units", "grammys", "guinness-records")}
 
 
 def _check_unit(category, unit):
@@ -352,8 +353,10 @@ def share_label(p):
 
 TABS = [("lives", "Lives", "people", "lives"), ("people", "People", "people", "people"), ("jobs", "Jobs", "jobs", None),
         ("economy", "Economy $", "economy", None), ("climate", "Climate", "climate", None),
-        ("nature", "Nature", "nature", None), ("overall", "Overall $", None, None)]
+        ("nature", "Nature", "nature", None),
+        ("culture", "Culture", "culture", None), ("overall", "Overall $", None, None)]
 DEFAULT_TAB = "lives"
+CULTURE_RANK_UNIT = "certified-units"  # culture ranks by RIAA certified units; other units shown, not summed
 
 
 def tab_ranking(tab, include_estimates=True):
@@ -375,7 +378,8 @@ def tab_ranking(tab, include_estimates=True):
         for (c, u), sc in sorted(by_category(es, include_estimates).items()):
             k = r.get((c, u), 1.0) if cat == "economy" else 1.0
             pos, neg = sc["positive_total"] * k, sc["negative_total"] * k
-            net += pos - neg
+            if cat != "culture" or u == CULTURE_RANK_UNIT:
+                net += pos - neg
             fmt = usd if cat == "economy" else (lambda v, u=u: f"{'+' if v > 0 else ''}{v:,.0f} {u}")
             if pos:
                 lines.append(("+", fmt(pos)))
@@ -388,7 +392,7 @@ def tab_ranking(tab, include_estimates=True):
         if not lines:
             continue
         units = {e.get("unit") for e in es}
-        label = usd(net) if cat == "economy" else (f"{net:+,.0f} {units.pop()}" if len(units) == 1 else "")
+        label = usd(net) if cat == "economy" else f"{net:+,.0f} {CULTURE_RANK_UNIT}" if cat == "culture" else (f"{net:+,.0f} {units.pop()}" if len(units) == 1 else "")
         out.append({"person_id": pid, "name": pretty(pid), "net": net, "label": label, "lines": lines,
                     "estimated": any(e.get("is_estimate") for e in es), "image_url": images.get(pid)})
     out.sort(key=lambda p: (-p["net"], p["person_id"]))
