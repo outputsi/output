@@ -142,3 +142,6 @@ API: entries accept `category` and `unit`; `POST /api/entries/{id}/category` `{c
 
 ### Culture tab
 Category `culture`, units limited to `certified-units` (RIAA Gold & Platinum certified units), `grammys` (Recording Academy wins) and `guinness-records`. No USD rate, so culture never enters Overall. The tab ranks by `grammys` until any `certified-units` entry is approved, then by `certified-units` only; other units are shown as lines but never summed with it. No judgment metrics (e.g. "influence"). Same 2-source policy; the certifier's own database is the primary record.
+
+### Publishing
+Each person has a `published` flag (`POST /api/people/{id}/publish {"published": true|false}`). Only published people appear on homepage tabs and `/api/ranking`; unpublished person pages return 404 unless `?preview=1` (reviewer preview; there is no login). Everyone who existed when the flag was added was marked published. New names stay unpublished until both sides are researched.

@@ -211,8 +211,24 @@ def api_queue():
     return _with_sources([dict(e) for e in db.queue()])
 
 
+def _visible(person_id, preview):
+    """Unpublished people are hidden (404) unless the reviewer preview flag is set."""
+    if not preview and person_id not in db.published_ids():
+        raise HTTPException(404, "person not published")
+
+
+class PublishIn(BaseModel):
+    published: bool
+
+
+@app.post("/api/people/{person_id}/publish")
+def api_publish(person_id: str, body: PublishIn):
+    return db.set_published(person_id, body.published)
+
+
 @app.get("/api/people/{person_id}")
-def api_person(person_id: str, include_estimates: bool = True):
+def api_person(person_id: str, include_estimates: bool = True, preview: bool = False):
+    _visible(person_id, preview)
     return person_view(person_id, include_estimates)
 
 
@@ -264,7 +280,10 @@ def ranking(include_estimates=True):
         by_person.setdefault(e["person_id"], []).append(e)
     people = []
     r = rates()
+    pub = db.published_ids()
     for pid, es in by_person.items():
+        if pid not in pub:
+            continue  # unpublished people never appear on the homepage
         counted = any(e["status"] == "approved" and (include_estimates or not e.get("is_estimate")) for e in es)
         if not counted:
             continue  # hidden until something counts
@@ -366,8 +385,9 @@ def tab_ranking(tab, include_estimates=True):
     r = rates()
     images = db.people_images()
     by_person = {}
+    pub = db.published_ids()
     for e in db.all_entries():
-        if e["status"] != "approved" or (not include_estimates and e.get("is_estimate")):
+        if e["person_id"] not in pub or e["status"] != "approved" or (not include_estimates and e.get("is_estimate")):
             continue
         c, u = e.get("category") or "people", e.get("unit") or "people"
         if c == cat and (unit is None or u == unit):
@@ -567,7 +587,8 @@ def _cat_table(v):
 
 
 @app.get("/people/{person_id}", response_class=HTMLResponse)
-def ui_person(person_id: str, include_estimates: bool = True):
+def ui_person(person_id: str, include_estimates: bool = True, preview: bool = False):
+    _visible(person_id, preview)
     v = person_view(person_id, include_estimates)
     pid = escape(person_id)
     toggle = (f"<a href='/people/{pid}?include_estimates=0'>Exclude estimates</a>" if include_estimates

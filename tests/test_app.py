@@ -43,6 +43,7 @@ def client(tmp_path, monkeypatch):
 
 def sub(c, **kw):
     body = {"person_id": "p1", "action": "x", "source": "https://ex.com", "scale": 1, "direction": 1, **kw}
+    c.post(f"/api/people/{body['person_id']}/publish", json={"published": True})
     return c.post("/api/entries", json=body)
 
 
@@ -88,6 +89,7 @@ def test_ui_smoke(client):
     assert "Approve" in html
     for e in q:
         client.post(f"/queue/{e['id']}/approve", data={"reviewer_id": "r"})
+    client.post("/api/people/u/publish", json={"published": True})
     page = client.get("/people/u").text
     assert "Net: 6.0" in page and 'href="https://s.org"' in page and "Book p.4" in page
 
@@ -310,6 +312,7 @@ def test_approve_unproven_estimate(client):
     assert r.status_code == 200 and r.json()["status"] == "approved"
     assert client.post(f"/api/entries/{n}/approve-estimate", json={"reviewer_id": "r"}).status_code == 409
     assert client.post(f"/api/entries/{e}/approve-estimate", json={"reviewer_id": "r"}).status_code == 409
+    client.post("/api/people/ue/publish", json={"published": True})
     assert client.get("/api/people/ue").json()["net"] == 50
 
 def test_credit_endpoint(client):
@@ -487,3 +490,34 @@ def test_culture_tab_ranks_by_certified_units(client):
     bad = client.post("/api/entries", json={"person_id": "x", "action": "a", "source": "https://e.org", "scale": 1,
                                             "direction": 1, "category": "culture", "unit": "influence"})
     assert bad.status_code == 422
+
+
+def test_unpublished_people_hidden(client):
+    body = {"person_id": "draft-guy", "action": "x", "source": "https://ex.com", "scale": 5, "direction": 1,
+            "category": "jobs", "unit": "jobs"}
+    i = client.post("/api/entries", json=body).json()["id"]
+    client.post(f"/api/entries/{i}/approve", json={"reviewer_id": "r"})
+    assert client.get("/api/ranking?tab=jobs").json() == []
+    assert 'data-person="draft-guy"' not in client.get("/?tab=overall").text
+    assert client.get("/people/draft-guy").status_code == 404
+    assert client.get("/api/people/draft-guy").status_code == 404
+    assert client.get("/api/people/draft-guy?preview=1").status_code == 200
+    assert client.post("/api/people/draft-guy/publish", json={"published": True}).json()["published"] is True
+    assert [p["person_id"] for p in client.get("/api/ranking?tab=jobs").json()] == ["draft-guy"]
+    assert client.get("/people/draft-guy").status_code == 200
+    client.post("/api/people/draft-guy/publish", json={"published": False})
+    assert client.get("/api/ranking?tab=jobs").json() == []
+
+
+def test_migration_publishes_existing_people(tmp_path, monkeypatch):
+    import sqlite3
+    from app import db
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.executescript(db.SQLITE_SCHEMA + "CREATE TABLE people (person_id TEXT PRIMARY KEY, image_url TEXT NULL);"
+                      "INSERT INTO entries (person_id, action, source, scale, direction, created_at) VALUES ('old-guy','a','https://e.org',1,1,'2026-01-01');")
+    con.commit(); con.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db._initialized.discard(path)
+    db.init()
+    assert "old-guy" in db.published_ids()

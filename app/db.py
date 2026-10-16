@@ -160,6 +160,17 @@ def init():
                 cur.execute(f"ALTER TABLE people ADD COLUMN IF NOT EXISTS {name} TEXT NULL")
             elif name not in [r[1] for r in cur.execute("PRAGMA table_info(people)").fetchall()]:
                 cur.execute(f"ALTER TABLE people ADD COLUMN {name} TEXT NULL")
+        # People 'published' flag. First time it is added, mark everyone who already exists as published.
+        if pg:
+            cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name='people' AND column_name='published'")
+            has_pub = cur.fetchone() is not None
+        else:
+            has_pub = "published" in [r[1] for r in cur.execute("PRAGMA table_info(people)").fetchall()]
+        if not has_pub:
+            cur.execute("ALTER TABLE people ADD COLUMN published INTEGER NOT NULL DEFAULT 0")
+            cur.execute("INSERT INTO people (person_id) SELECT DISTINCT person_id FROM entries WHERE true "
+                        "ON CONFLICT (person_id) DO NOTHING")
+            cur.execute("UPDATE people SET published=1")
         # Migrate tables created before the status column existed.
         if pg:
             cur.execute(f"ALTER TABLE entries ADD COLUMN IF NOT EXISTS status {STATUS_DDL}")
@@ -289,6 +300,22 @@ def people_images():
     with connect() as (cur, ph):
         cur.execute("SELECT person_id, image_url FROM people")
         return {r["person_id"]: r["image_url"] for r in cur.fetchall()}
+
+
+def published_ids():
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT person_id FROM people WHERE published=1")
+        return {r["person_id"] for r in cur.fetchall()}
+
+
+def set_published(person_id, published):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("INSERT INTO people (person_id, published) VALUES (?, ?) "
+                       "ON CONFLICT (person_id) DO UPDATE SET published = excluded.published", ph),
+                    (person_id, int(bool(published))))
+        return {"person_id": person_id, "published": bool(published)}
 
 
 def get_person(person_id):
