@@ -152,3 +152,5 @@ When the `ADMIN_KEY` env var is set, every POST except submitting pending entrie
 
 ### SEC filings and jobs
 An official SEC filing (10-K, 8-K, etc.) alone is enough for a company's jobs/employee count. It is not enough for self-reported impact claims.
+
+The same applies to equivalent legally required regulator filings outside the US (e.g. UK Companies House accounts, annual reports filed with an EU/national securities regulator), for jobs/employee counts only.
