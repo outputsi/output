@@ -79,7 +79,10 @@ def person_card(name, initials, lines, size="portrait", photo=None, credit=None)
     im.paste(av, (ax, ay), mask)
     if photo is not None and credit:
         c = f"Photo: {credit}"
-        dr.text((ax + d / 2, ay + d + 22), c, font=_fit(dr, c, 18, d + 200), fill=MUTED, anchor="mm")
+        if portrait:
+            dr.text((ax + d / 2, ay + d + 22), c, font=_fit(dr, c, 18, W - 120), fill=MUTED, anchor="mm")
+        else:  # left-aligned under the avatar so it never runs off the edge
+            dr.text((ax, ay + d + 22), c, font=_fit(dr, c, 18, W - 120), fill=MUTED, anchor="lm")
     if portrait:
         x, y, maxw, anchor = W / 2, ay + d + 110, W - 120, "mm"
     else:
