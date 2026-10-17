@@ -741,17 +741,56 @@ def card_person(person_id: str, size: str = "portrait", preview: bool = False):
     return Response(png, media_type="image/png", headers=PNG_HEADERS)
 
 
+# Share-card labels for culture units (singular, plural). Card rendering only.
+UNIT_LABELS = {"academy-awards": ("Oscar", "Oscars"), "grammys": ("Grammy", "Grammys"),
+               "guinness-records": ("Guinness record", "Guinness records"),
+               "certified-units": ("certified unit", "certified units")}
+_BIG = ((1e15, " quadrillion"), (1e12, " trillion"), (1e9, " billion"), (1e6, " million"))
+
+
+def card_usd(v):
+    """Readable USD for cards: +$14.2 quadrillion, +$15.6 billion, +$950K."""
+    sign = "-" if v < 0 else ("+" if v > 0 else "")
+    a = abs(v)
+    for div, suf in _BIG:
+        if a >= div:
+            x = a / div
+            return f"{sign}${x:,.0f}{suf}" if x >= 1000 else f"{sign}${x:.3g}{suf}"
+    return usd(v)
+
+
+def unit_label(net, unit):
+    one, many = UNIT_LABELS.get(unit, (unit, unit))
+    return f"{net:+,.0f} {one if abs(net) == 1 else many}"
+
+
+def card_tab_data(tab, unit=None):
+    """(title, rows, note) for /cards/tab/{tab}.png. rows: [(name, sign, label, estimated)], at most 5."""
+    t = next(t for t in TABS if t[0] == tab)
+    note = "Sourced, counted entries only"
+    if tab == "overall":  # only people with a nonzero dollar overall (culture has no USD conversion)
+        rows = [(p["name"], "+" if p["net"] >= 0 else "-", card_usd(p["net"]), p["estimated"])
+                for p in ranking() if p["net"]][:5]
+        note = "USD via official conversion rates \u00b7 est. = estimate"
+    elif tab == "culture":
+        ranked = tab_ranking(tab, culture_unit=unit)
+        ru = CULTURE_UNITS[unit][0] if unit else next(
+            (u for u in CULTURE_RANK_UNITS if any(p["label"].endswith(" " + u) for p in ranked)), CULTURE_RANK_UNITS[-1])
+        rows = [(p["name"], "+" if p["net"] >= 0 else "-", unit_label(p["net"], ru), p["estimated"]) for p in ranked[:5]]
+    else:
+        rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab)[:5]]
+    top = f"Top {len(rows)}" if rows else "Top"
+    title = f"{top} \u00b7 {t[1]}" + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else "")
+    return title, rows, note
+
+
 @app.get("/cards/tab/{tab}.png")
 def card_tab(tab: str, size: str = "portrait", unit: str | None = None):
-    t = next((t for t in TABS if t[0] == tab), None)
-    if not t:
+    if not any(t[0] == tab for t in TABS):
         raise HTTPException(404, "unknown tab")
     unit = _culture_unit(tab, unit)
-    if tab == "overall":
-        rows = [(p["name"], "+" if p["net"] >= 0 else "-", usd(p["net"]), p["estimated"]) for p in ranking()[:5]]
-    else:
-        rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab, culture_unit=unit)[:5]]
-    png = cards.tab_card(f"Top 5 \u00b7 {t[1]}" + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else ""), rows, _size(size))
+    title, rows, note = card_tab_data(tab, unit)
+    png = cards.tab_card(title, rows, _size(size), note)
     return Response(png, media_type="image/png", headers=PNG_HEADERS)
 
 

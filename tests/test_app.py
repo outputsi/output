@@ -618,3 +618,34 @@ def test_not_counted_split_by_sign(client):
     assert pos < h.index("good-claim") < neg < h.index("bad-claim")
     v = client.get("/api/people/split").json()
     assert v["positive_total"] == 2 and v["negative_total"] == 0  # unproven never counts
+
+
+def test_tab_card_labels_and_counts(client):
+    from app import main as m
+    _approve(client, person_id="a", scale=2, direction=1, category="culture", unit="academy-awards")
+    _approve(client, person_id="b", scale=1, direction=1, category="culture", unit="academy-awards")
+    _approve(client, person_id="c", scale=3, direction=1, category="culture", unit="guinness-records")
+    _approve(client, person_id="d", scale=1, direction=1, category="culture", unit="grammys")
+    title, rows, _ = m.card_tab_data("culture", "oscars")
+    assert title == "Top 2 \u00b7 Culture \u00b7 Oscars"
+    assert [r[2] for r in rows] == ["+2 Oscars", "+1 Oscar"]
+    title, rows, _ = m.card_tab_data("culture", "guinness")
+    assert title.startswith("Top 1 ") and rows[0][2] == "+3 Guinness records"
+    assert m.card_tab_data("culture", "grammys")[1][0][2] == "+1 Grammy"
+    assert m.card_tab_data("culture")[1][0][2] == "+1 Grammy"
+    assert "academy-awards" not in str(m.card_tab_data("culture", "oscars"))
+    assert m.card_tab_data("climate")[0] == "Top \u00b7 Climate"
+
+
+def test_overall_card_skips_zero_and_formats_big(client):
+    from app import main as m
+    _approve(client, person_id="singer", scale=5, direction=1, category="culture", unit="grammys")
+    _approve(client, person_id="saver", scale=10, direction=1, category="people", unit="lives", is_estimate=True)
+    title, rows, note = m.card_tab_data("overall")
+    assert "singer" not in [r[0].lower() for r in rows] and all(r[2] not in ("$0", "+$0") for r in rows)
+    assert title == f"Top {len(rows)} \u00b7 Overall $" and "USD" in note and "est." in note
+    assert m.card_usd(1.42e16) == "+$14.2 quadrillion" and m.card_usd(1.56e10) == "+$15.6 billion"
+    assert m.card_usd(-2.5e12) == "-$2.5 trillion" and m.card_usd(9.5e5) == "+$950K"
+    assert m.card_usd(3e18) == "+$3,000 quadrillion"
+    r = client.get("/cards/tab/overall.png?size=x")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"

@@ -101,7 +101,7 @@ def person_card(name, initials, lines, size="portrait", photo=None, credit=None)
     return _png(im)
 
 
-def tab_card(title, rows, size="portrait"):
+def tab_card(title, rows, size="portrait", note="Sourced, counted entries only"):
     """rows: [(name, sign, label, estimated)] top 5."""
     W, H = SIZES[size]
     im = Image.new("RGB", (W, H), BG)
@@ -130,5 +130,5 @@ def tab_card(title, rows, size="portrait"):
             dr.text((120, y), n, font=nf, fill=INK, anchor="lm")
             dr.text((W - 60, y), lab, font=lf, fill=col, anchor="rm")
         y += step
-    _footer(dr, W, H, "Sourced, counted entries only")
+    _footer(dr, W, H, note)
     return _png(im)
