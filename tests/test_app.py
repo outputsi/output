@@ -517,7 +517,7 @@ def test_culture_unit_subtoggles(client):
     assert client.get("/api/ranking?tab=jobs&unit=oscars").status_code == 422
     h = client.get("/?tab=culture&unit=oscars").text
     assert 'href="/?tab=culture&unit=oscars"' in h and "Guinness records" in h and "Certified units" not in h
-    assert 'data-person="a"' in h and 'data-person="c"' not in h and "/cards/tab/culture.png?unit=oscars" in h
+    assert 'data-person="a"' in h and 'data-person="c"' not in h and "/cards/tab/culture.png?unit=oscars&amp;size=x" in h
     r = client.get("/cards/tab/culture.png?unit=oscars")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     _approve(client, person_id="d", scale=5, direction=1, category="culture", unit="certified-units")

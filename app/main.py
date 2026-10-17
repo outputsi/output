@@ -686,7 +686,7 @@ def _base(request):
 
 def og_tags(title, desc, page_url, card_path, base):
     """Open Graph + Twitter tags; X/Facebook get the 1200x675 card."""
-    img = f"{base}{card_path}?size=x"
+    img = f"{base}{card_path}{'&' if '?' in card_path else '?'}size=x"
     t, dsc, u, i = escape(title), escape(desc), escape(page_url), escape(img)
     return (f'<meta property="og:type" content="website"><meta property="og:title" content="{t}">'
             f'<meta property="og:description" content="{dsc}"><meta property="og:url" content="{u}">'
