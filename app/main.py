@@ -778,11 +778,16 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
         est = ("<h2>Estimates (excluded)</h2><p>Approved but marked as estimates; not counted unless estimates are included.</p>"
                "<table style='color:#666'><tr><th>action</th><th>source</th><th>scale</th><th>credit</th><th>effective</th><th>dir</th></tr>"
                f"{est_rows}</table>")
-    nc = "".join(
-        f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
-        f"<td>{e['direction']:+d}</td><td>{escape(e['status'])}</td></tr>"
-        for e in v["not_counted"]
-    ) or "<tr><td colspan=5>None.</td></tr>"
+    def nc_table(sign, title, color):
+        rows_ = "".join(
+            f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
+            f"<td>{e['direction']:+d}</td><td>{escape(e['status'])}</td></tr>"
+            for e in v["not_counted"] if e["direction"] == sign
+        ) or "<tr><td colspan=5>None.</td></tr>"
+        return (f"<h3 class='nc-{'pos' if sign > 0 else 'neg'}' style='color:{color}'>{title}</h3>"
+                f"<table style='color:#666;border-left:4px solid {color}'><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>status</th></tr>"
+                f"{rows_}</table>")
+    nc = nc_table(1, "Not counted, positive", "#1a8f4c") + nc_table(-1, "Not counted, negative", "#c93a3a")
     photo = ""
     pr = db.get_person(person_id)
     if pr and pr["image_url"]:
@@ -805,5 +810,4 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
                 f"{rows}</table>{est}"
                 "<hr style='margin:2em 0;border:2px solid #999'>"
                 "<h2>Not counted / unproven</h2><p>Unproven or rejected entries. They do not affect the totals.</p>"
-                "<table style='color:#666'><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>status</th></tr>"
-                f"{nc}</table>", head)
+                f"{nc}", head)

@@ -118,6 +118,7 @@ def test_unproven_does_not_affect_net(client):
     assert client.post("/api/entries/999/mark-unproven", json={"reviewer_id": "x"}).status_code == 404
     html = client.get("/people/p1").text
     assert "Counted entries" in html and "Not counted / unproven" in html and "unproven" in html
+    assert "Not counted, positive" in html and "Not counted, negative" in html
 
 
 def test_ui_mark_unproven(client):
@@ -604,3 +605,16 @@ def test_display_name_override(client):
     assert client.get("/api/ranking?tab=overall").json()[0]["name"] == "Doug McMillon"
     client.post("/api/people/doug-mcmillon/name", json={"display_name": ""})
     assert client.get("/api/ranking?tab=overall").json()[0]["name"] == "Doug Mcmillon"
+
+
+def test_not_counted_split_by_sign(client):
+    for d, act in ((1, "good-claim"), (-1, "bad-claim")):
+        e = client.post("/api/entries", json={"person_id": "split", "action": act, "source": "https://e.org",
+                                              "scale": 5, "direction": d}).json()
+        client.post(f"/api/entries/{e['id']}/mark-unproven", json={"reviewer_id": "r"})
+    _approve(client, person_id="split", scale=2, direction=1)
+    h = client.get("/people/split").text
+    pos, neg = h.index("Not counted, positive"), h.index("Not counted, negative")
+    assert pos < h.index("good-claim") < neg < h.index("bad-claim")
+    v = client.get("/api/people/split").json()
+    assert v["positive_total"] == 2 and v["negative_total"] == 0  # unproven never counts
