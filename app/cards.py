@@ -10,6 +10,8 @@ FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 GREEN, RED, INK, MUTED, BG = (22, 128, 61), (185, 28, 28), (17, 17, 17), (100, 100, 100), (250, 250, 247)
 FOOTER = "outputrank.com"
 _photo_cache = {}
+# Wikimedia requires a descriptive User-Agent with contact info (https://w.wiki/4wJS).
+UA = "OutputRankCards/1.0 (https://github.com/outputsi/output; papimalon@users.noreply.github.com)"
 
 
 def font(px, bold=False):
@@ -28,11 +30,11 @@ def fetch_photo(url):
         return _photo_cache[url]
     img = None
     try:
-        r = httpx.get(url, timeout=5, follow_redirects=True, headers={"User-Agent": "OutputRankCards/1.0 (outputrank.com)"})
+        r = httpx.get(url, timeout=5, follow_redirects=True, headers={"User-Agent": UA})
         r.raise_for_status()
         img = Image.open(io.BytesIO(r.content)).convert("RGB")
     except Exception:
-        img = None
+        return None  # not cached, so a transient failure is retried next time
     _photo_cache[url] = img
     return img
 
