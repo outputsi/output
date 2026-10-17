@@ -428,9 +428,28 @@ TABS = [("lives", "Lives", "people", "lives"), ("people", "People", "people", "p
         ("culture", "Culture", "culture", None), ("overall", "Overall $", None, None)]
 DEFAULT_TAB = "lives"
 CULTURE_RANK_UNITS = ("certified-units", "grammys")  # rank by certified units once any are approved, else Grammys
+# Culture sub-toggles: ?tab=culture&unit=<key>; each ranks one unit only, never summed.
+CULTURE_UNITS = {"certified": ("certified-units", "Certified units"), "grammys": ("grammys", "Grammys"),
+                 "oscars": ("academy-awards", "Oscars"), "guinness": ("guinness-records", "Guinness records")}
 
 
-def tab_ranking(tab, include_estimates=True):
+def culture_unit_keys():
+    """Sub-toggles to show: certified units only once any are counted."""
+    pub = db.published_ids()
+    has_cert = any(e["unit"] == "certified-units" and e["status"] == "approved" and e["person_id"] in pub
+                   for e in db.all_entries())
+    return [k for k in CULTURE_UNITS if k != "certified" or has_cert]
+
+
+def _culture_unit(tab, unit):
+    if unit is None:
+        return None
+    if tab != "culture" or unit not in CULTURE_UNITS:
+        raise HTTPException(422, f"unit is only for tab=culture, one of {list(CULTURE_UNITS)}")
+    return unit
+
+
+def tab_ranking(tab, include_estimates=True, culture_unit=None):
     """People with counted entries in the tab's category, sorted by net in its own unit
     (economy: converted to USD with official rates). Returns [{person_id, name, net, lines, estimated, image_url}]."""
     _, _, cat, unit = next(t for t in TABS if t[0] == tab)
@@ -446,7 +465,7 @@ def tab_ranking(tab, include_estimates=True):
         if c == cat and (unit is None or u == unit):
             by_person.setdefault(e["person_id"], []).append(e)
     have = {e.get("unit") for es in by_person.values() for e in es}
-    rank_unit = next((u for u in CULTURE_RANK_UNITS if u in have), CULTURE_RANK_UNITS[-1])
+    rank_unit = CULTURE_UNITS[culture_unit][0] if culture_unit else next((u for u in CULTURE_RANK_UNITS if u in have), CULTURE_RANK_UNITS[-1])
     out = []
     for pid, es in by_person.items():
         if cat == "culture" and not any(e.get("unit") == rank_unit for e in es):
@@ -477,27 +496,38 @@ def tab_ranking(tab, include_estimates=True):
 
 
 @app.get("/api/ranking")
-def api_ranking(tab: str = DEFAULT_TAB, include_estimates: bool = True):
+def api_ranking(tab: str = DEFAULT_TAB, include_estimates: bool = True, unit: str | None = None):
     if tab not in {t[0] for t in TABS}:
         raise HTTPException(422, "unknown tab")
-    return ranking(include_estimates) if tab == "overall" else tab_ranking(tab, include_estimates)
+    unit = _culture_unit(tab, unit)
+    return ranking(include_estimates) if tab == "overall" else tab_ranking(tab, include_estimates, unit)
 
 
 @app.get("/", response_class=HTMLResponse)
-def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT_TAB):
+def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT_TAB, unit: str = ""):
     if tab not in {t[0] for t in TABS}:
         tab = DEFAULT_TAB
+    unit = unit if tab == "culture" and unit in CULTURE_UNITS else None
+    uq = f"&unit={unit}" if unit else ""
     base = _base(request)
-    og = og_tags(f"Output \u00b7 Top 5 {next(t[1] for t in TABS if t[0] == tab)}", "Sourced, counted positive and negative entries.",
-                 f"{base}/?tab={tab}", f"/cards/tab/{tab}.png", base)
+    title = next(t[1] for t in TABS if t[0] == tab) + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else "")
+    og = og_tags(f"Output \u00b7 Top 5 {title}", "Sourced, counted positive and negative entries.",
+                 f"{base}/?tab={tab}{uq}", f"/cards/tab/{tab}.png" + (f"?unit={unit}" if unit else ""), base)
     cards = []
     q = "" if include_estimates else "?include_estimates=0"
     ex = "" if include_estimates else "&include_estimates=0"
-    toggle = (f'<a href="/?tab={tab}&include_estimates=0">Exclude estimates</a>' if include_estimates
-              else f'<a href="/?tab={tab}">Include estimates</a>')
+    toggle = (f'<a href="/?tab={tab}{uq}&include_estimates=0">Exclude estimates</a>' if include_estimates
+              else f'<a href="/?tab={tab}{uq}">Include estimates</a>')
     tabs = "".join(f'<a class="tab{" active" if k == tab else ""}" href="/?tab={k}{ex}">{lbl}</a>' for k, lbl, _, _ in TABS)
+    if tab == "culture":
+        ranked = tab_ranking(tab, include_estimates, unit)
+        cur = unit or next((k for k, (u, _) in CULTURE_UNITS.items() if ranked and ranked[0]["label"].endswith(" " + u)),
+                           "certified" if "certified" in culture_unit_keys() else "grammys")
+        tabs += ('</nav><nav class="tabs sub">' + "".join(
+            f'<a class="tab{" active" if k == cur else ""}" href="/?tab=culture&unit={k}{ex}">{CULTURE_UNITS[k][1]}</a>'
+            for k in culture_unit_keys()))
     if tab != "overall":
-        for p in tab_ranking(tab, include_estimates):
+        for p in (ranked if tab == "culture" else tab_ranking(tab, include_estimates)):
             pid = escape(p["person_id"])
             av = (f'<img class="avatar" src="{escape(p["image_url"])}" alt="{escape(p["name"])}">' if p["image_url"]
                   else f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>')
@@ -712,15 +742,16 @@ def card_person(person_id: str, size: str = "portrait", preview: bool = False):
 
 
 @app.get("/cards/tab/{tab}.png")
-def card_tab(tab: str, size: str = "portrait"):
+def card_tab(tab: str, size: str = "portrait", unit: str | None = None):
     t = next((t for t in TABS if t[0] == tab), None)
     if not t:
         raise HTTPException(404, "unknown tab")
+    unit = _culture_unit(tab, unit)
     if tab == "overall":
         rows = [(p["name"], "+" if p["net"] >= 0 else "-", usd(p["net"]), p["estimated"]) for p in ranking()[:5]]
     else:
-        rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab)[:5]]
-    png = cards.tab_card(f"Top 5 \u00b7 {t[1]}", rows, _size(size))
+        rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab, culture_unit=unit)[:5]]
+    png = cards.tab_card(f"Top 5 \u00b7 {t[1]}" + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else ""), rows, _size(size))
     return Response(png, media_type="image/png", headers=PNG_HEADERS)
 
 

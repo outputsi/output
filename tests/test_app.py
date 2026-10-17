@@ -502,6 +502,26 @@ def test_culture_tab_ranks_by_certified_units(client):
     assert client.get("/api/people/recordman").json()["categories"][0]["unit"] == "guinness-records"
     _approve(client, person_id="actor", scale=1, direction=1, category="culture", unit="academy-awards")
     assert client.get("/api/people/actor").json()["categories"][0]["unit"] == "academy-awards"
+
+
+def test_culture_unit_subtoggles(client):
+    _approve(client, person_id="a", scale=2, direction=1, category="culture", unit="academy-awards")
+    _approve(client, person_id="b", scale=1, direction=1, category="culture", unit="academy-awards")
+    _approve(client, person_id="b", scale=9, direction=1, category="culture", unit="grammys")
+    _approve(client, person_id="c", scale=3, direction=1, category="culture", unit="guinness-records")
+    o = client.get("/api/ranking?tab=culture&unit=oscars").json()
+    assert [(p["person_id"], p["net"]) for p in o] == [("a", 2), ("b", 1)]  # Grammys not summed in
+    assert [p["person_id"] for p in client.get("/api/ranking?tab=culture&unit=guinness").json()] == ["c"]
+    assert [p["person_id"] for p in client.get("/api/ranking?tab=culture&unit=grammys").json()] == ["b"]
+    assert client.get("/api/ranking?tab=culture&unit=bogus").status_code == 422
+    assert client.get("/api/ranking?tab=jobs&unit=oscars").status_code == 422
+    h = client.get("/?tab=culture&unit=oscars").text
+    assert 'href="/?tab=culture&unit=oscars"' in h and "Guinness records" in h and "Certified units" not in h
+    assert 'data-person="a"' in h and 'data-person="c"' not in h and "/cards/tab/culture.png?unit=oscars" in h
+    r = client.get("/cards/tab/culture.png?unit=oscars")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    _approve(client, person_id="d", scale=5, direction=1, category="culture", unit="certified-units")
+    assert "Certified units" in client.get("/?tab=culture").text
     bad = client.post("/api/entries", json={"person_id": "x", "action": "a", "source": "https://e.org", "scale": 1,
                                             "direction": 1, "category": "culture", "unit": "influence"})
     assert bad.status_code == 422
