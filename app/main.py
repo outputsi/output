@@ -16,7 +16,7 @@ from .scoring import by_category, credit_label, effective_scale, fmt_pct, overal
 
 UNITS = {"people": ("people", "lives"), "jobs": ("jobs",), "climate": ("tCO2e",),
          "nature": ("animals", "hectares"), "economy": "USD or CUR-YYYY", "tech": None,
-         "culture": ("certified-units", "grammys", "guinness-records")}
+         "culture": ("certified-units", "grammys", "academy-awards", "guinness-records")}
 
 
 def _check_unit(category, unit):
