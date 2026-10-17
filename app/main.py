@@ -229,6 +229,13 @@ def api_set_source_quote(entry_id: int, source_id: int, body: QuoteIn):
     return api_list_sources(entry_id)
 
 
+@app.post("/api/entries/{entry_id}/sources/{source_id}/remove")
+def api_remove_source(entry_id: int, source_id: int):
+    if not db.remove_source(entry_id, source_id):
+        raise HTTPException(404, "source not found")
+    return api_list_sources(entry_id)
+
+
 @app.get("/api/entries/{entry_id}/sources")
 def api_list_sources(entry_id: int):
     e = db.get_entry(entry_id)

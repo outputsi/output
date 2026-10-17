@@ -389,6 +389,8 @@ def test_correct_source_quote(client):
     r = client.post(f"/api/entries/{i}/sources/{sid}/quote", json={"quote": "new"})
     assert r.json()["extra_sources"][0]["quote"] == "new"
     assert client.post(f"/api/entries/{i+1}/sources/{sid}/quote", json={"quote": "x"}).status_code == 404
+    assert client.post(f"/api/entries/{i+1}/sources/{sid}/remove").status_code == 404
+    assert client.post(f"/api/entries/{i}/sources/{sid}/remove").json()["extra_sources"] == []
 
 
 def test_make_primary_source(client):

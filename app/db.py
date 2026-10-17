@@ -377,6 +377,14 @@ def set_source_quote(entry_id, source_id, quote):
         return cur.rowcount > 0
 
 
+def remove_source(entry_id, source_id):
+    """Remove one extra source from an entry; False if it does not belong to the entry."""
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("DELETE FROM entry_sources WHERE id=? AND entry_id=?", ph), (source_id, entry_id))
+        return cur.rowcount > 0
+
+
 def entry_sources(entry_ids=None):
     """Map entry_id -> list of extra sources."""
     _ensure()
