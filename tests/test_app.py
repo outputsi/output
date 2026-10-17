@@ -545,3 +545,27 @@ def test_admin_key_guard(client, monkeypatch):
     j = sub(client, person_id="guarded").json()["id"]
     r = client.post(f"/queue/{j}/approve?admin_key=k1", data={"reviewer_id": "r"}, follow_redirects=False)
     assert r.status_code == 303 and "admin_key=k1" in r.headers["location"]
+
+
+def test_share_cards_and_og(client):
+    from PIL import Image
+    import io as _io
+    _approve(client, person_id="card-guy", scale=12, direction=1, category="jobs", unit="jobs")
+    _approve(client, person_id="card-guy", scale=3, direction=-1, category="people", unit="lives", is_estimate=True)
+    from app import main as m
+    lines = m.person_card_lines("card-guy")
+    assert ("+", "+12 jobs", False) in lines and ("-", "-3 lives", True) in lines
+    for path, size in (("/cards/person/card-guy.png", (1080, 1350)), ("/cards/person/card-guy.png?size=x", (1200, 675)),
+                       ("/cards/tab/jobs.png", (1080, 1350)), ("/cards/tab/overall.png?size=x", (1200, 675))):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+        assert Image.open(_io.BytesIO(r.content)).size == size
+    assert client.get("/cards/tab/nope.png").status_code == 404
+    assert client.get("/cards/person/card-guy.png?size=huge").status_code == 422
+    h = client.get("/people/card-guy").text
+    assert 'property="og:image" content="http://testserver/cards/person/card-guy.png?size=x"' in h
+    assert 'name="twitter:card" content="summary_large_image"' in h
+    assert 'og:image" content="http://testserver/cards/tab/jobs.png?size=x"' in client.get("/?tab=jobs").text
+    body = {"person_id": "hidden-card", "action": "x", "source": "https://ex.com", "scale": 5, "direction": 1}
+    client.post("/api/entries", json=body)
+    assert client.get("/cards/person/hidden-card.png").status_code == 404

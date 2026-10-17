@@ -8,10 +8,10 @@ from html import escape
 from typing import Literal
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
-from . import db
+from . import cards, db
 from .scoring import by_category, credit_label, effective_scale, fmt_pct, overall, score
 
 UNITS = {"people": ("people", "lives"), "jobs": ("jobs",), "climate": ("tCO2e",),
@@ -264,8 +264,8 @@ def api_person(person_id: str, include_estimates: bool = True, preview: bool = F
 
 
 # ---------- Web UI ----------
-def page(title, body):
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title>
+def page(title, body, head=""):
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title>{head}
 <style>body{{font-family:sans-serif;max-width:900px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}
 td,th{{border:1px solid #ccc;padding:4px;text-align:left}}.n{{font-size:1.4em;margin-right:2em}}</style></head>
 <body><nav><a href="/">Home</a> | <a href="/submit">Submit</a> | <a href="/queue">Queue</a> |
@@ -462,9 +462,12 @@ def api_ranking(tab: str = DEFAULT_TAB, include_estimates: bool = True):
 
 
 @app.get("/", response_class=HTMLResponse)
-def ui_home(include_estimates: bool = True, tab: str = DEFAULT_TAB):
+def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT_TAB):
     if tab not in {t[0] for t in TABS}:
         tab = DEFAULT_TAB
+    base = _base(request)
+    og = og_tags(f"Output \u00b7 Top 5 {next(t[1] for t in TABS if t[0] == tab)}", "Sourced, counted positive and negative entries.",
+                 f"{base}/?tab={tab}", f"/cards/tab/{tab}.png", base)
     cards = []
     q = "" if include_estimates else "?include_estimates=0"
     ex = "" if include_estimates else "&include_estimates=0"
@@ -491,7 +494,7 @@ def ui_home(include_estimates: bool = True, tab: str = DEFAULT_TAB):
                      f'<div class="net">{share_label(p)}</div>{other_html(p["other"])}</a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title><style>{HOME_CSS}</style></head>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title>{og}<style>{HOME_CSS}</style></head>
 <body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/submit">Submit</a><a href="/queue">Queue</a></nav></header>
 <main><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}
 <details><summary>Set a person's image</summary>
@@ -621,8 +624,86 @@ def _cat_table(v):
                if v["other"] else ""))
 
 
+def _base(request):
+    """Public origin for absolute OG URLs (Render terminates TLS, so honour X-Forwarded-Proto)."""
+    if os.environ.get("PUBLIC_URL"):
+        return os.environ["PUBLIC_URL"].rstrip("/")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    return f"{proto}://{request.url.netloc}"
+
+
+def og_tags(title, desc, page_url, card_path, base):
+    """Open Graph + Twitter tags; X/Facebook get the 1200x675 card."""
+    img = f"{base}{card_path}?size=x"
+    t, dsc, u, i = escape(title), escape(desc), escape(page_url), escape(img)
+    return (f'<meta property="og:type" content="website"><meta property="og:title" content="{t}">'
+            f'<meta property="og:description" content="{dsc}"><meta property="og:url" content="{u}">'
+            f'<meta property="og:image" content="{i}"><meta property="og:image:width" content="1200">'
+            f'<meta property="og:image:height" content="675"><meta name="twitter:card" content="summary_large_image">'
+            f'<meta name="twitter:title" content="{t}"><meta name="twitter:description" content="{dsc}">'
+            f'<meta name="twitter:image" content="{i}">')
+
+
+def person_card_lines(person_id):
+    """Counted totals per category in their own units; economy (currency-years) converted to USD with official rates, others in their own units."""
+    v = person_view(person_id, True)
+    r = rates()
+    est = {((e.get("category") or "people"), (e.get("unit") or "people")) for e in v["entries"] if e.get("is_estimate")}
+    lines, econ_pos, econ_neg, econ_est = [], 0.0, 0.0, False
+    for c in v["categories"]:
+        key = (c["category"], c["unit"])
+        if c["category"] == "economy" and key in r:
+            econ_pos += c["positive_total"] * r[key]
+            econ_neg += c["negative_total"] * r[key]
+            econ_est = econ_est or key in est
+            continue
+        label = c["unit"] if c["category"] in (c["unit"], "people") else f"{c['category']} {c['unit']}"
+        if c["positive_total"]:
+            lines.append(("+", f"+{c['positive_total']:,.0f} {label}", key in est))
+        if c["negative_total"]:
+            lines.append(("-", f"-{c['negative_total']:,.0f} {label}", key in est))
+    if econ_pos:
+        lines.insert(0, ("+", f"{usd(econ_pos)} economy", econ_est))
+    if econ_neg:
+        lines.insert(1 if econ_pos else 0, ("-", f"{usd(-econ_neg)} economy", econ_est))
+    return lines
+
+
+def _size(size):
+    if size not in cards.SIZES:
+        raise HTTPException(422, f"size must be one of {sorted(cards.SIZES)}")
+    return size
+
+
+PNG_HEADERS = {"Cache-Control": "public, max-age=600"}
+
+
+@app.get("/cards/person/{person_id}.png")
+def card_person(person_id: str, size: str = "portrait", preview: bool = False):
+    _visible(person_id, preview)
+    pr = db.get_person(person_id)
+    photo = credit = None
+    if pr and pr["image_url"] and pr["image_credit"]:  # photos only with a credit line
+        photo, credit = cards.fetch_photo(pr["image_url"]), pr["image_credit"]
+    png = cards.person_card(pretty(person_id), initials(person_id), person_card_lines(person_id), _size(size), photo, credit)
+    return Response(png, media_type="image/png", headers=PNG_HEADERS)
+
+
+@app.get("/cards/tab/{tab}.png")
+def card_tab(tab: str, size: str = "portrait"):
+    t = next((t for t in TABS if t[0] == tab), None)
+    if not t:
+        raise HTTPException(404, "unknown tab")
+    if tab == "overall":
+        rows = [(p["name"], "+" if p["net"] >= 0 else "-", usd(p["net"]), p["estimated"]) for p in ranking()[:5]]
+    else:
+        rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab)[:5]]
+    png = cards.tab_card(f"Top 5 \u00b7 {t[1]}", rows, _size(size))
+    return Response(png, media_type="image/png", headers=PNG_HEADERS)
+
+
 @app.get("/people/{person_id}", response_class=HTMLResponse)
-def ui_person(person_id: str, include_estimates: bool = True, preview: bool = False):
+def ui_person(person_id: str, request: Request, include_estimates: bool = True, preview: bool = False):
     _visible(person_id, preview)
     v = person_view(person_id, include_estimates)
     pid = escape(person_id)
@@ -658,6 +739,9 @@ def ui_person(person_id: str, include_estimates: bool = True, preview: bool = Fa
             lic_html = (f' (<a href="{escape(lic)}" target="_blank" rel="noopener">license</a>)'
                         if lic.startswith(("http://", "https://")) else "")
             photo += f'<p class="photo-credit" style="font-size:.75em;color:#666;margin-top:-.5em">Photo: {escape(pr["image_credit"] or "")}{lic_html}</p>'
+    base = _base(request)
+    head = og_tags(f"{pretty(person_id)} on Output", "Sourced, counted positive and negative entries.",
+                   f"{base}/people/{pid}", f"/cards/person/{pid}.png", base)
     return page(f"Person: {person_id}", photo +
                 "<style>.badge{background:#fde68a;color:#78350f;border-radius:4px;padding:1px 6px;font-size:.8em}</style>"
                 f"<p>{toggle}</p>{_cat_table(v)}"
@@ -669,4 +753,4 @@ def ui_person(person_id: str, include_estimates: bool = True, preview: bool = Fa
                 "<hr style='margin:2em 0;border:2px solid #999'>"
                 "<h2>Not counted / unproven</h2><p>Unproven or rejected entries. They do not affect the totals.</p>"
                 "<table style='color:#666'><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>status</th></tr>"
-                f"{nc}</table>")
+                f"{nc}</table>", head)

@@ -154,3 +154,11 @@ When the `ADMIN_KEY` env var is set, every POST except submitting pending entrie
 An official SEC filing (10-K, 8-K, etc.) alone is enough for a company's jobs/employee count. It is not enough for self-reported impact claims.
 
 The same applies to equivalent legally required regulator filings outside the US (e.g. UK Companies House accounts, annual reports filed with an EU/national securities regulator), for jobs/employee counts only.
+
+## Share cards
+Server-rendered PNGs (Pillow, bundled DejaVu fonts): `/cards/person/{id}.png` and `/cards/tab/{tab}.png` (top 5).
+`?size=portrait` (default, 1080x1350, IG/TikTok) or `?size=x` (1200x675, X/OG). Only approved, counted totals; economy
+currency-years converted to USD with official rates, other categories in their own units; any estimate is labelled "est.".
+Green = positive, red = negative; footer `outputrank.com`. A photo is drawn only when the person has an image with a credit line,
+which is printed under it. Unpublished people 404 (preview with the admin key). Person and home/tab pages carry Open Graph and
+Twitter tags pointing at the `?size=x` card; set `PUBLIC_URL` to force the absolute origin (e.g. https://outputrank.com).
