@@ -571,3 +571,14 @@ def test_share_cards_and_og(client):
     body = {"person_id": "hidden-card", "action": "x", "source": "https://ex.com", "scale": 5, "direction": 1}
     client.post("/api/entries", json=body)
     assert client.get("/cards/person/hidden-card.png").status_code == 404
+
+
+def test_display_name_override(client):
+    _approve(client, person_id="doug-mcmillon")
+    client.post("/api/people/doug-mcmillon/publish", json={"published": True})
+    assert client.get("/api/ranking?tab=overall").json()[0]["name"] == "Doug Mcmillon"
+    r = client.post("/api/people/doug-mcmillon/name", json={"display_name": " Doug McMillon "})
+    assert r.json()["display_name"] == "Doug McMillon"
+    assert client.get("/api/ranking?tab=overall").json()[0]["name"] == "Doug McMillon"
+    client.post("/api/people/doug-mcmillon/name", json={"display_name": ""})
+    assert client.get("/api/ranking?tab=overall").json()[0]["name"] == "Doug Mcmillon"

@@ -29,6 +29,7 @@ Minimal tracker of net output per person, based on sourced actions. Review is ma
 | image_url | TEXT NULL |
 | image_credit | TEXT NULL |
 | image_license_url | TEXT NULL |
+| display_name | TEXT NULL (overrides the name derived from person_id) |
 
 Used only for homepage avatars; created by `init()`.
 
@@ -82,6 +83,7 @@ Totals are computed on every read, so approval is reflected immediately.
 - `POST /api/entries/{id}/approve` — `{reviewer_id}` → status approved, sets reviewed_at + reviewer_id (only from pending; else 409)
 - `POST /api/entries/{id}/mark-unproven` — `{reviewer_id}` → status unproven, sets reviewed_at + reviewer_id (from pending or approved — an approved entry drops out of the totals; 404 unknown, 409 if already unproven/rejected). Source/scale/direction are kept but never counted.
 - `POST /api/people/{person_id}/image` — `{image_url, image_credit?, image_license_url?}` (null/empty clears) → sets the avatar image and optional photo credit in `people`; credit shown as a small line under the photo on the person page
+- `POST /api/people/{person_id}/name` — `{display_name}` (null/empty clears) → display name used on rankings and cards instead of the id-derived one (e.g. `Doug McMillon`)
 - `POST /api/entries/{id}/sources` — `{url, quote?, reviewer_id, make_primary?}` → attaches an additional source (table `entry_sources`); `make_primary: true` replaces the entry's main `source` instead. `GET /api/entries/{id}/sources` lists them. Extra sources are shown on the person page and queue; scoring and statuses are unaffected.
 - `GET /api/queue` — pending entries (status = pending)
 - `GET /api/people/{person_id}` — positive_total, negative_total, net, approved entries with sources (`entries`), plus `not_counted` (unproven/rejected)
@@ -125,7 +127,7 @@ Output measures a person's total impact, not only people helped or harmed. Each 
 | economy | `USD` (nominal dollars of the year stated; no inflation adjustment) |
 | tech, culture | any measurable unit the source states |
 
-All sourcing rules above apply to every category. Economy: fines count as negative only with an official finding; settlements without one stay unproven. Court-ordered civil damages count like fines. First-instance rulings count unless reversed or stayed (noted in the entry). Vaccine/aid lives-saved figures from a multi-donor body count for a funder only via a sourced funding share (`sourced_share`); otherwise unproven. Duplicates are never deleted: marked unproven with 'duplicate of #N'. Company outcomes count toward a person only while they are CEO, chairman/executive chair, or controlling owner, with role dates from a source (organization basis). Jobs count as positive when an official filing and a major outlet both state the number.
+All sourcing rules above apply to every category. Economy: fines count as negative only with an official finding; settlements without one stay unproven. Guilty pleas are convictions and count. Deferred/non-prosecution agreements in which the company admitted the facts count, but only for conduct within the person's tenure; if the in-tenure share is not sourced, the entry stays unproven. Court-ordered civil damages count like fines. First-instance rulings count unless reversed or stayed (noted in the entry). Vaccine/aid lives-saved figures from a multi-donor body count for a funder only via a sourced funding share (`sourced_share`); otherwise unproven. Duplicates are never deleted: marked unproven with 'duplicate of #N'. Company outcomes count toward a person only while they are CEO, chairman/executive chair, or controlling owner, with role dates from a source (organization basis). Jobs count as positive when an official filing and a major outlet both state the number.
 
 The person page shows per-category totals side by side. The overall score converts categories to USD **only** with officially published rates, stored in the `conversions` table with their source (`GET /api/conversions`):
 
@@ -159,6 +161,8 @@ The same applies to equivalent legally required regulator filings outside the US
 Server-rendered PNGs (Pillow, bundled DejaVu fonts): `/cards/person/{id}.png` and `/cards/tab/{tab}.png` (top 5).
 `?size=portrait` (default, 1080x1350, IG/TikTok) or `?size=x` (1200x675, X/OG). Only approved, counted totals; economy
 currency-years converted to USD with official rates, other categories in their own units; any estimate is labelled "est.".
+Photos: freely licensed only (CC BY, CC BY-SA, CC0, public domain, UK Open Government Licence v3), always with a credit line and license URL.
+
 Green = positive, red = negative; footer `outputrank.com`. A photo is drawn only when the person has an image with a credit line,
 which is printed under it. Unpublished people 404 (preview with the admin key). Person and home/tab pages carry Open Graph and
 Twitter tags pointing at the `?size=x` card; set `PUBLIC_URL` to force the absolute origin (e.g. https://outputrank.com).

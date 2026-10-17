@@ -301,7 +301,20 @@ class ImageIn(BaseModel):
     image_license_url: str | None = None
 
 
-def pretty(person_id):
+class NameIn(BaseModel):
+    display_name: str | None = None
+
+
+@app.post("/api/people/{person_id}/name")
+def api_person_name(person_id: str, body: NameIn):
+    return db.set_display_name(person_id, (body.display_name or "").strip() or None)
+
+
+def pretty(person_id, names=None):
+    """Display name: admin override if set, else derived from the id."""
+    names = db.display_names() if names is None else names
+    if names.get(person_id):
+        return names[person_id]
     return " ".join(w.capitalize() for w in person_id.replace("_", "-").split("-") if w)
 
 
@@ -319,6 +332,7 @@ def ranking(include_estimates=True):
     people = []
     r = rates()
     pub = db.published_ids()
+    names = db.display_names()
     for pid, es in by_person.items():
         if pid not in pub:
             continue  # unpublished people never appear on the homepage
@@ -326,7 +340,7 @@ def ranking(include_estimates=True):
         if not counted:
             continue  # hidden until something counts
         ov = overall(es, r, include_estimates)
-        people.append({"person_id": pid, "name": pretty(pid), "net": ov["overall"], "positive_pct": ov["positive_pct"],
+        people.append({"person_id": pid, "name": pretty(pid, names), "net": ov["overall"], "positive_pct": ov["positive_pct"],
                        "negative_pct": ov["negative_pct"], "not_convertible": ov["not_convertible"],
                        "estimated": ov["estimated"], "other": other_lines(es, r, include_estimates),
                        "image_url": images.get(pid)})
@@ -424,6 +438,7 @@ def tab_ranking(tab, include_estimates=True):
     images = db.people_images()
     by_person = {}
     pub = db.published_ids()
+    names = db.display_names()
     for e in db.all_entries():
         if e["person_id"] not in pub or e["status"] != "approved" or (not include_estimates and e.get("is_estimate")):
             continue
@@ -455,7 +470,7 @@ def tab_ranking(tab, include_estimates=True):
             continue
         units = {e.get("unit") for e in es}
         label = usd(net) if cat == "economy" else f"{net:+,.0f} {rank_unit}" if cat == "culture" else (f"{net:+,.0f} {units.pop()}" if len(units) == 1 else "")
-        out.append({"person_id": pid, "name": pretty(pid), "net": net, "label": label, "lines": lines,
+        out.append({"person_id": pid, "name": pretty(pid, names), "net": net, "label": label, "lines": lines,
                     "estimated": any(e.get("is_estimate") for e in es), "image_url": images.get(pid)})
     out.sort(key=lambda p: (-p["net"], p["person_id"]))
     return out

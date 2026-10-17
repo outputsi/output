@@ -159,7 +159,7 @@ def init():
         cur.execute(PG_SCHEMA if pg else SQLITE_SCHEMA)
         cur.execute(PEOPLE_SCHEMA)
         # Optional photo credit columns on people.
-        for name in ("image_credit", "image_license_url"):
+        for name in ("image_credit", "image_license_url", "display_name"):
             if pg:
                 cur.execute(f"ALTER TABLE people ADD COLUMN IF NOT EXISTS {name} TEXT NULL")
             elif name not in [r[1] for r in cur.execute("PRAGMA table_info(people)").fetchall()]:
@@ -304,6 +304,22 @@ def people_images():
     with connect() as (cur, ph):
         cur.execute("SELECT person_id, image_url FROM people")
         return {r["person_id"]: r["image_url"] for r in cur.fetchall()}
+
+
+def display_names():
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute("SELECT person_id, display_name FROM people WHERE display_name IS NOT NULL")
+        return {r["person_id"]: r["display_name"] for r in cur.fetchall()}
+
+
+def set_display_name(person_id, display_name):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("INSERT INTO people (person_id, display_name) VALUES (?, ?) "
+                       "ON CONFLICT (person_id) DO UPDATE SET display_name = excluded.display_name", ph),
+                    (person_id, display_name))
+        return {"person_id": person_id, "display_name": display_name}
 
 
 def published_ids():
