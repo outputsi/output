@@ -649,3 +649,16 @@ def test_overall_card_skips_zero_and_formats_big(client):
     assert m.card_usd(3e18) == "+$3,000 quadrillion"
     r = client.get("/cards/tab/overall.png?size=x")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+
+
+def test_adsense_pages(client):
+    r = client.get("/ads.txt")
+    assert r.status_code == 200 and r.text.strip() == "google.com, pub-1880568133397191, DIRECT, f08c47fec0942fa0"
+    h = client.get("/").text
+    assert 'adsbygoogle.js?client=ca-pub-1880568133397191' in h.split("</head>")[0]
+    assert '<meta name="google-adsense-account" content="ca-pub-1880568133397191">' in h
+    assert 'href="/privacy"' in h and 'href="/about"' in h
+    for path in ("/privacy", "/about", "/submit"):
+        r = client.get(path)
+        assert r.status_code == 200 and "google-adsense-account" in r.text
+    assert "policies.google.com/technologies/ads" in client.get("/privacy").text

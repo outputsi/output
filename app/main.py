@@ -271,13 +271,34 @@ def api_person(person_id: str, include_estimates: bool = True, preview: bool = F
 
 
 # ---------- Web UI ----------
+ADSENSE_DEFAULT = "ca-pub-1880568133397191"
+CONTACT_EMAIL = "musicamalonllc@gmail.com"
+
+
+def adsense_client():
+    c = (os.environ.get("ADSENSE_CLIENT") or ADSENSE_DEFAULT).strip()
+    return c if c.startswith("ca-") else "ca-" + c
+
+
+def adsense_head():
+    c = escape(adsense_client())
+    return (f'<meta name="google-adsense-account" content="{c}">'
+            f'<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={c}" '
+            'crossorigin="anonymous"></script>')
+
+
+SITE_FOOTER = ('<footer class="site-footer" style="margin:3em 0 1em;padding-top:1em;border-top:1px solid #ddd;'
+               'font-size:.85em;color:#666;text-align:center"><a href="/about">About</a> · '
+               '<a href="/privacy">Privacy</a></footer>')
+
+
 def page(title, body, head=""):
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title>{head}
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title>{adsense_head()}{head}
 <style>body{{font-family:sans-serif;max-width:900px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}
 td,th{{border:1px solid #ccc;padding:4px;text-align:left}}.n{{font-size:1.4em;margin-right:2em}}</style></head>
 <body><nav><a href="/">Home</a> | <a href="/submit">Submit</a> | <a href="/queue">Queue</a> |
 <form style="display:inline" action="/person"><input name="person_id" placeholder="person_id"><button>View person</button></form></nav>
-<h1>{escape(title)}</h1>{body}</body></html>""")
+<h1>{escape(title)}</h1>{body}{SITE_FOOTER}</body></html>""")
 
 
 def sources_cell(e):
@@ -546,13 +567,13 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
                      f'<div class="net">{share_label(p)}</div>{other_html(p["other"])}</a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title>{og}<style>{HOME_CSS}</style></head>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title>{adsense_head()}{og}<style>{HOME_CSS}</style></head>
 <body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/submit">Submit</a><a href="/queue">Queue</a></nav></header>
 <main><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}
 <details><summary>Set a person's image</summary>
 <form method="post" action="/people-image"><input name="person_id" placeholder="person_id" required>
 <input name="image_url" placeholder="https://... (blank to clear)" size="40"><button>Save</button></form></details>
-</main></body></html>""")
+</main>{SITE_FOOTER}</body></html>""")
 
 
 @app.get("/submit", response_class=HTMLResponse)
@@ -850,3 +871,49 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
                 "<hr style='margin:2em 0;border:2px solid #999'>"
                 "<h2>Not counted / unproven</h2><p>Unproven or rejected entries. They do not affect the totals.</p>"
                 f"{nc}", head)
+
+
+# ---------- AdSense / static pages ----------
+@app.get("/ads.txt", include_in_schema=False)
+def ads_txt():
+    pub = adsense_client().removeprefix("ca-")
+    return Response(f"google.com, {pub}, DIRECT, f08c47fec0942fa0\n", media_type="text/plain")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def ui_privacy():
+    return page("Privacy policy", f"""
+<p>Output (outputrank.com) does not ask you to create an account and does not collect personal data from visitors,
+beyond the standard server logs our host keeps (such as IP address, browser type, page requested and time), which are
+used only to run and protect the site.</p>
+<h2>Advertising and cookies</h2>
+<p>We use Google AdSense to show ads. Google and its partners use cookies to serve ads based on your prior visits to
+this and other websites. Google's use of advertising cookies lets it and its partners serve ads based on your visits
+to this site and/or other sites on the Internet.</p>
+<p>You can learn how Google uses data and how to control it here:
+<a href="https://policies.google.com/technologies/ads" target="_blank" rel="noopener">https://policies.google.com/technologies/ads</a>.
+You can opt out of personalized advertising in <a href="https://adssettings.google.com" target="_blank" rel="noopener">Google Ads Settings</a>.</p>
+<h2>Submissions</h2>
+<p>If you submit an entry, the text and sources you enter are stored and may be published after review. Do not include personal information in submissions.</p>
+<h2>Contact</h2>
+<p>Questions about this policy: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""")
+
+
+@app.get("/about", response_class=HTMLResponse)
+def ui_about():
+    return page("About Output", f"""
+<p>Output ranks famous people by the total measurable impact of their existence on Earth, good and bad. Every person
+has a positive side and a negative side, counted in concrete units: lives, jobs, economy (USD) and culture.</p>
+<h2>Sourcing rules</h2>
+<ul>
+<li>Every counted claim needs <b>2 independent, very trusted sources</b> agreeing on the number; a 3rd source breaks ties.</li>
+<li>Very trusted means peer-reviewed journals, government and official bodies, national archives, major museums and
+memorials, university presses and major newspapers of record. Self-reported company figures don't count on their own.</li>
+<li>When sources disagree, the lowest documented number is used.</li>
+<li>Negative claims need a court or official finding.</li>
+<li>Estimates are allowed when 2 very trusted sources give an approximate figure, and are labeled <i>est.</i></li>
+<li>Claims that don't meet these rules are still shown on the person's page as <i>unproven</i>, but don't affect the score.</li>
+<li>Outcomes of companies and foundations a person led or funded are credited to them, split by stated shares or evenly among named people.</li>
+</ul>
+<p>Every entry is reviewed before it counts. Anyone can <a href="/submit">submit</a> a claim with sources.</p>
+<p>Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""")
