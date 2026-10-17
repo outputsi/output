@@ -657,7 +657,7 @@ def person_card_lines(person_id):
             econ_neg += c["negative_total"] * r[key]
             econ_est = econ_est or key in est
             continue
-        label = c["unit"] if c["category"] in (c["unit"], "people") else f"{c['category']} {c['unit']}"
+        label = c["unit"] if c["category"] in (c["unit"], "people", "culture") else f"{c['category']} {c['unit']}"
         if c["positive_total"]:
             lines.append(("+", f"+{c['positive_total']:,.0f} {label}", key in est))
         if c["negative_total"]:

@@ -109,11 +109,21 @@ def tab_card(title, rows, size="portrait"):
         dr.text((60, y), "No counted entries yet", font=font(40), fill=MUTED, anchor="lm")
     for i, (name, sign, label, est) in enumerate(rows[:5], 1):
         lab = label + ("  est." if est else "")
-        lf = font(48 if portrait else 40, True)
-        lw = dr.textlength(lab, font=lf)
-        dr.text((60, y), f"{i}.", font=font(52 if portrait else 40, True), fill=MUTED, anchor="lm")
-        dr.text((150 if portrait else 120, y), name, font=_fit(dr, name, 52 if portrait else 40, W - 240 - lw - 120, True), fill=INK, anchor="lm")
-        dr.text((W - 60, y), lab, font=lf, fill=GREEN if sign == "+" else RED, anchor="rm")
+        col = GREEN if sign == "+" else RED
+        if portrait:  # name, then its number underneath
+            dr.text((60, y), f"{i}.", font=font(52, True), fill=MUTED, anchor="lm")
+            dr.text((150, y), name, font=_fit(dr, name, 52, W - 210, True), fill=INK, anchor="lm")
+            dr.text((150, y + 64), lab, font=_fit(dr, lab, 46, W - 210, True), fill=col, anchor="lm")
+        else:
+            lf = _fit(dr, lab, 38, (W - 180) // 2, True)
+            lw = dr.textlength(lab, font=lf)
+            nf = font(38, True)
+            n, room = name, W - 180 - lw - 40
+            while len(n) > 3 and dr.textlength(n, font=nf) > room:
+                n = n[:-2].rstrip() + "\u2026"
+            dr.text((60, y), f"{i}.", font=font(38, True), fill=MUTED, anchor="lm")
+            dr.text((120, y), n, font=nf, fill=INK, anchor="lm")
+            dr.text((W - 60, y), lab, font=lf, fill=col, anchor="rm")
         y += step
     _footer(dr, W, H, "Sourced, counted entries only")
     return _png(im)
