@@ -1,0 +1,11 @@
+name: keepalive
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping outputrank.com
+        run: curl -fsS --max-time 60 --retry 3 --retry-delay 10 --retry-all-errors -o /dev/null -w '%{http_code} %{time_total}s\n' 'https://outputrank.com/api/ranking?tab=lives'
