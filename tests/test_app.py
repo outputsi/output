@@ -52,7 +52,7 @@ def sub(c, **kw):
 def test_unapproved_excluded_api(client):
     r = sub(client, scale=50)
     assert r.status_code == 201 and r.json()["reviewed_at"] is None
-    p = client.get("/api/people/p1").json()
+    p = client.get("/api/people/p1?preview=1").json()
     assert p["net"] == 0 and p["entries"] == []
     assert len(client.get("/api/queue").json()) == 1
 
@@ -127,7 +127,7 @@ def test_ui_mark_unproven(client):
     i = sub(client).json()["id"]
     assert "Mark unproven" in client.get("/queue").text
     client.post(f"/queue/{i}/mark-unproven", data={"reviewer_id": "r"})
-    assert client.get("/api/people/p1").json()["not_counted"][0]["status"] == "unproven"
+    assert client.get("/api/people/p1?preview=1").json()["not_counted"][0]["status"] == "unproven"
 
 
 def test_sqlite_migration(tmp_path, monkeypatch):
@@ -221,7 +221,7 @@ def test_pct_display(client):
     a = _approve(client, person_id="jonas-salk", scale=9237.5, unit="lives")
     sub(client, person_id="nobody", scale=1)
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
-    assert client.get("/api/people/nobody").json()["positive_pct"] is None
+    assert client.get("/api/people/nobody?preview=1").json()["positive_pct"] is None
     h = client.get("/?tab=overall").text
     assert '<span class="pos">100%</span> · <span class="neg">0%</span>' in h
     assert 'data-person="nobody"' not in h and "9,237.5" not in h and "bar" not in h
@@ -408,7 +408,7 @@ def test_home_hides_zero_uncounted_and_org_reapprove(client):
     _approve(client, person_id="somebody", scale=5)
     h = client.get("/?tab=overall").text
     assert 'data-person="nobody"' not in h and 'data-person="somebody"' in h
-    assert client.get("/api/people/nobody").status_code == 200
+    assert client.get("/api/people/nobody").status_code == 404 and client.get("/api/people/nobody?preview=1").status_code == 200
     e = sub(client, person_id="nobody", scale=30).json()["id"]
     client.post(f"/api/entries/{e}/mark-unproven", json={"reviewer_id": "r"})
     r = client.post(f"/api/entries/{e}/credit", json={"credit_share": 1, "credit_basis": "organization",
@@ -775,3 +775,20 @@ def test_mirrored_photos_exist():
 def test_about_company_filing_rule(client):
     h = client.get("/about").text
     assert "official SEC filing" in h and "Self-reported company figures don't count on their own" not in h
+
+
+def test_published_needs_counted_entry(client, monkeypatch):
+    sub(client, person_id="nocount", scale=1)  # published, only a pending entry
+    i = sub(client, person_id="unp", scale=1).json()["id"]
+    client.post(f"/api/entries/{i}/mark-unproven", json={"reviewer_id": "r"})
+    _approve(client, person_id="yes", scale=2, unit="lives")
+    for pid in ("nocount", "unp"):
+        assert client.get(f"/people/{pid}").status_code == 404
+        assert client.get(f"/cards/person/{pid}.png").status_code == 404
+        assert client.get(f"/api/people/{pid}").status_code == 404
+        assert client.get(f"/people/{pid}?preview=1").status_code == 200
+    x = client.get("/sitemap.xml").text
+    assert "/people/yes" in x and "/people/nocount" not in x and "/people/unp" not in x
+    monkeypatch.setenv("ADMIN_KEY", "k")
+    assert client.get("/people/nocount?preview=1").status_code == 401
+    assert client.get("/people/nocount?preview=1&admin_key=k").status_code == 200

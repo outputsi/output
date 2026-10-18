@@ -365,9 +365,15 @@ def api_queue():
     return _with_sources([dict(e) for e in db.queue()])
 
 
+def public_ids():
+    """Publicly visible people: published flag AND at least one approved (counted) entry."""
+    pub = db.published_ids()
+    return {e["person_id"] for e in db.all_entries() if e["status"] == "approved" and e["person_id"] in pub}
+
+
 def _visible(person_id, preview):
     """Unpublished people are hidden (404) unless the reviewer preview flag is set."""
-    if not preview and person_id not in db.published_ids():
+    if not preview and person_id not in public_ids():
         raise HTTPException(404, "person not published")
 
 
@@ -1164,7 +1170,7 @@ def robots_txt(request: Request):
 def sitemap_xml(request: Request):
     base = _base(request)
     paths = [tab_path(t[0]) for t in TABS] + [tab_path("culture", u) for u in culture_unit_keys()]
-    paths += [f"/people/{quote(pid)}" for pid in sorted(db.published_ids())] + ["/about", "/privacy"]
+    paths += [f"/people/{quote(pid)}" for pid in sorted(public_ids())] + ["/about", "/privacy"]
     urls = "".join(f"<url><loc>{escape(base + p)}</loc></url>" for p in dict.fromkeys(paths))
     return Response('<?xml version="1.0" encoding="UTF-8"?>'
                     f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
