@@ -553,11 +553,15 @@ def ranking(include_estimates=True):
         if not counted:
             continue  # hidden until something counts
         ov = overall(es, r, include_estimates)
-        people.append({"person_id": pid, "name": pretty(pid, names), "net": ov["overall"], "positive_pct": ov["positive_pct"],
-                       "negative_pct": ov["negative_pct"], "not_convertible": ov["not_convertible"],
+        n = sum(1 for e in es if e["status"] == "approved" and (include_estimates or not e.get("is_estimate")))
+        name = pretty(pid, names)
+        people.append({"person_id": pid, "name": name, "positive_pct": ov["positive_pct"],
+                       "negative_pct": ov["negative_pct"], "counted_entries": n, "not_convertible": ov["not_convertible"],
                        "estimated": ov["estimated"], "other": other_lines(es, r, include_estimates),
                        "image_url": images.get(pid)})
-    people.sort(key=lambda p: (-p["net"], p["person_id"]))
+    # Overall: positive share of counted impact, desc; ties by counted entries desc, then name. No dollar figure.
+    people.sort(key=lambda p: (p["positive_pct"] is None, -(p["positive_pct"] or 0), -p["counted_entries"],
+                               p["name"].lower(), p["person_id"]))
     return people
 
 
@@ -638,7 +642,7 @@ def share_label(p):
 TABS = [("lives", "Lives", "people", "lives"), ("people", "People", "people", "people"), ("jobs", "Jobs", "jobs", None),
         ("economy", "Economy $", "economy", None), ("climate", "Climate", "climate", None),
         ("nature", "Nature", "nature", None),
-        ("culture", "Culture", "culture", None), ("overall", "Overall $", None, None)]
+        ("culture", "Culture", "culture", None), ("overall", "Overall", None, None)]
 DEFAULT_TAB = "lives"
 CULTURE_RANK_UNITS = ("certified-units", "grammys")  # rank by certified units once any are approved, else Grammys
 # Culture sub-toggles: ?tab=culture&unit=<key>; each ranks one unit only, never summed.
@@ -665,7 +669,7 @@ def _culture_unit(tab, unit):
 TAB_DESC = {"lives": "lives saved and lost", "people": "people helped and harmed", "jobs": "jobs created and cut",
             "economy": "economic value created and destroyed, in US dollars", "climate": "greenhouse emissions (tCO2e)",
             "nature": "animals and hectares of nature protected and harmed", "culture": "certified sales, Grammys, Oscars and records",
-            "overall": "total impact in US dollars, using official conversion rates"}
+            "overall": "the share of their counted impact that is positive"}
 
 
 def tab_path(tab, unit=None):
@@ -778,9 +782,8 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
-                     f'<div class="name">{escape(p["name"])}</div><div class="score">{usd(p["net"])}'
-                     f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>'
-                     f'<div class="net">{share_label(p)}</div>{other_html(p["other"])}</a>')
+                     f'<div class="name">{escape(p["name"])}</div><div class="score">{share_label(p)}'
+                     f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>{other_html(p["other"])}</a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
     h1, ptitle, desc = tab_meta(tab, unit)
     canonical = base + tab_path(tab, unit)
@@ -1003,10 +1006,11 @@ def card_tab_data(tab, unit=None):
     """(title, rows, note) for /cards/tab/{tab}.png. rows: [(name, sign, label, estimated)], at most 5."""
     t = next(t for t in TABS if t[0] == tab)
     note = "Sourced, counted entries only"
-    if tab == "overall":  # only people with a nonzero dollar overall (culture has no USD conversion)
-        rows = [(p["name"], "+" if p["net"] >= 0 else "-", card_usd(p["net"]), p["estimated"])
-                for p in ranking() if p["net"]][:5]
-        note = "USD via official conversion rates \u00b7 est. = estimate"
+    if tab == "overall":  # positive share of counted impact; people with no share yet are skipped
+        rows = [(p["name"], "+" if p["positive_pct"] >= 50 else "-",
+                 f"{fmt_pct(p['positive_pct'])} positive \u00b7 {fmt_pct(p['negative_pct'])} negative", p["estimated"])
+                for p in ranking() if p["positive_pct"] is not None][:5]
+        note = "Share of counted impact that is positive \u00b7 est. = estimate"
     elif tab == "culture":
         ranked = tab_ranking(tab, culture_unit=unit)
         ru = CULTURE_UNITS[unit][0] if unit else next(
@@ -1070,11 +1074,11 @@ def _person_totals(v):
         for c in v["categories"]) or "<tr><td colspan=5 class='na'>Nothing counted yet.</td></tr>"
     ov = v["overall"]
     overall = ""
-    if ov["overall"] or ov["positive_pct"] is not None:
-        overall = (f"<p class='overall'>Overall in US dollars (official conversion rates only): <b>{usd(ov['overall'])}</b>"
+    if ov["positive_pct"] is not None or ov["not_convertible"]:
+        overall = (f"<p class='overall'>Overall, share of counted impact that is positive:"
+                   + (f" <span class='pos'>{fmt_pct(ov['positive_pct'])}</span> positive / "
+                      f"<span class='neg'>{fmt_pct(ov['negative_pct'])}</span> negative" if ov["positive_pct"] is not None else " \u2014")
                    + (" <span class='badge'>est.</span>" if ov["estimated"] else "")
-                   + (f" · <span class='pos'>{fmt_pct(ov['positive_pct'])}</span> positive / "
-                      f"<span class='neg'>{fmt_pct(ov['negative_pct'])}</span> negative" if ov["positive_pct"] is not None else "")
                    + (f"<br><small>Not converted (own units): {escape(', '.join(ov['not_convertible']))}</small>"
                       if ov["not_convertible"] else "") + "</p>")
     return ("<h2>Counted totals by category</h2><p class='muted'>Each category is totalled in its own unit; units are never added together.</p>"
@@ -1238,6 +1242,9 @@ don't count on their own.</li>
 <li>Negative claims need a court or official finding.</li>
 <li>Estimates are allowed when 2 very trusted sources give an approximate figure, and are labeled <i>est.</i></li>
 <li>Claims that don't meet these rules are still shown on the person's page as <i>unproven</i>, but don't affect the score.</li>
+<li>The <b>Overall</b> tab ranks people by the share of their counted impact that is positive (green %) versus
+negative (red %), not by dollars. Ties go to the person with more counted entries. Categories are only combined
+through officially published conversion rates; the others are shown in their own units on each person's page.</li>
 <li>Outcomes of companies and foundations a person led or funded are credited to them, split by stated shares or evenly among named people.</li>
 </ul>
 <p>Every entry is reviewed before it counts. Anyone can <a href="/submit">submit</a> a claim with sources.</p>

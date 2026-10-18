@@ -112,7 +112,7 @@ Migration: on startup `init()` adds the `status` column to an existing `entries`
 
 ## Homepage tabs
 
-The homepage ranks people per category in tabs: Lives (default, `people/lives`), People, Jobs, Economy $ (all economy units converted with the official rates), Climate, Nature, and Overall $ (USD score across convertible categories). Each tab sorts by that category's net in its own unit, shows green/red totals, and lists only people with counted entries in it. Links are shareable: `/?tab=jobs`; API: `/api/ranking?tab=jobs`. Lives is the default because it is the only unit with an official rate and the most counted people. Person pages keep all categories.
+The homepage ranks people per category in tabs: Lives (default, `people/lives`), People, Jobs, Economy $ (all economy units converted with the official rates), Climate, Nature, and Overall (ranks by the share of counted impact that is positive, green % vs red %, ties by number of counted entries then name; no dollar figure). Each tab sorts by that category's net in its own unit, shows green/red totals, and lists only people with counted entries in it. Links are shareable: `/?tab=jobs`; API: `/api/ranking?tab=jobs`. Lives is the default because it is the only unit with an official rate and the most counted people. Person pages keep all categories.
 
 ## Categories, units and the overall score
 
@@ -138,7 +138,7 @@ The person page shows per-category totals side by side. The overall score conver
 
 People rescued from death count as lives saved (`people/lives`) when the sources say rescued or saved from death. Scores driven by estimate entries carry an "estimate" label on the homepage and person page.
 
-Categories without an official rate (people/people, jobs, nature, tech, culture) are shown but not included in the overall score, and are labeled "not convertible". The homepage ranks by overall score with green/red %, and hides people with nothing counted.
+Categories without an official rate (people/people, jobs, nature, tech, culture) are shown but not included in the overall score, and are labeled "not convertible". The Overall tab and `/api/ranking?tab=overall` rank by this positive share (`positive_pct`/`negative_pct`, plus `counted_entries`), not by dollars, and hide people with nothing counted.
 
 API: entries accept `category` and `unit`; `POST /api/entries/{id}/category` `{category, unit, reviewer_id}` reclassifies an entry.
 

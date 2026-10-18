@@ -175,7 +175,8 @@ def test_home_ranking_order(client):
     r = client.get("/?tab=overall")
     assert r.status_code == 200
     h = r.text
-    order = [h.index(f'data-person="{p}"') for p in ("top-person", "low-guy", "neg-one")]
+    # all-positive people tie at 100%: more counted entries first, then name; all-negative last
+    order = [h.index(f'data-person="{p}"') for p in ("low-guy", "top-person", "neg-one")]
     assert order == sorted(order) and 'data-person="pending-only"' not in h
     assert 'href="/people/top-person"' in h and "Top Person" in h
 
@@ -435,7 +436,7 @@ def test_categories_and_overall(client):
     assert sub(client, category="climate", unit="USD").status_code == 422
     h = client.get("/people/cat").text
     assert "Counted totals by category" in h and "Not converted (own units): jobs (jobs), people (people)" in h
-    assert "$28" in client.get("/?tab=overall").text
+    assert "$" not in client.get("/?tab=overall").text.split('<div class="grid">')[1]
     assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
     r = client.post(f"/api/entries/{i}/category", json={"category": "economy", "unit": "USD", "reviewer_id": "r"})
@@ -645,7 +646,8 @@ def test_overall_card_skips_zero_and_formats_big(client):
     _approve(client, person_id="saver", scale=10, direction=1, category="people", unit="lives", is_estimate=True)
     title, rows, note = m.card_tab_data("overall")
     assert "singer" not in [r[0].lower() for r in rows] and all(r[2] not in ("$0", "+$0") for r in rows)
-    assert title == f"Top {len(rows)} \u00b7 Overall $" and "USD" in note and "est." in note
+    assert title == f"Top {len(rows)} \u00b7 Overall" and "share of counted impact that is positive" in note.lower()
+    assert rows == [("Saver", "+", "100% positive \u00b7 0% negative", True)] and "$" not in note
     assert m.card_usd(1.42e16) == "+$14.2 quadrillion" and m.card_usd(1.56e10) == "+$15.6 billion"
     assert m.card_usd(-2.5e12) == "-$2.5 trillion" and m.card_usd(9.5e5) == "+$950K"
     assert m.card_usd(3e18) == "+$3,000 quadrillion"
@@ -792,3 +794,19 @@ def test_published_needs_counted_entry(client, monkeypatch):
     monkeypatch.setenv("ADMIN_KEY", "k")
     assert client.get("/people/nocount?preview=1").status_code == 401
     assert client.get("/people/nocount?preview=1&admin_key=k").status_code == 200
+
+
+def test_overall_ranks_by_positive_pct(client):
+    _approve(client, person_id="mixed", scale=90, unit="lives")
+    _approve(client, person_id="mixed", scale=10, direction=-1, unit="lives")
+    _approve(client, person_id="pure-a", scale=1, unit="lives")
+    _approve(client, person_id="pure-b", scale=1, unit="lives")
+    _approve(client, person_id="pure-b", scale=1000, unit="lives")
+    _approve(client, person_id="bad", scale=5, direction=-1, unit="lives")
+    _approve(client, person_id="jobs-only", scale=5, category="jobs", unit="jobs")
+    r = client.get("/api/ranking?tab=overall").json()
+    assert [p["person_id"] for p in r] == ["pure-b", "pure-a", "mixed", "bad", "jobs-only"]
+    assert r[2]["positive_pct"] == pytest.approx(90) and r[2]["negative_pct"] == pytest.approx(10)
+    assert r[0]["counted_entries"] == 2 and all("net" not in p for p in r)
+    h = client.get("/?tab=overall").text
+    assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
