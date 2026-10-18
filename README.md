@@ -175,4 +175,4 @@ Twitter tags pointing at the `?size=x` card; set `PUBLIC_URL` to force the absol
 
 ## Influence tab
 
-Neutral reach/attention tab (`?tab=influence`, `/api/ranking?tab=influence`): English Wikipedia page views for the last 12 months from the Wikimedia Pageviews API, stored in `app/influence.json` (period, as-of date, article title). Never positive/negative, excluded from Overall and its 2-tab minimum, and does not make anyone public.
+Neutral reach tab (`?tab=influence`, `/api/ranking?tab=influence`) with two sub-tabs: Languages (default; number of Wikipedia language editions with an article, from Wikidata sitelinks, as used by MIT Pantheon) and Attention (`&unit=attention`; English Wikipedia page views for the last 12 months, Wikimedia Pageviews API). Data in `app/influence.json` (Wikidata id, article title, as-of dates). Never positive/negative, excluded from Overall and its 2-tab minimum, and does not make anyone public.

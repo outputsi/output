@@ -680,17 +680,28 @@ try:
         INFLUENCE = json.load(_f)
 except (OSError, ValueError):
     INFLUENCE = {"people": {}}
-INFLUENCE_EXPLAIN = ("Influence measures reach and attention, not impact: English Wikipedia page views for "
-                     "{period} (Wikimedia Pageviews API, the original record). It is neutral and not part of Overall.")
+INFLUENCE_UNITS = {"languages": ("languages", "Languages"), "attention": ("views", "Attention")}
+INFLUENCE_DEFAULT = "languages"
 
 
-def influence_ranking():
-    """Public people by Wikipedia page views (neutral; net = views)."""
+def influence_explain(unit):
+    if (unit or INFLUENCE_DEFAULT) == "languages":
+        return ("Influence measures reach, not impact. Languages = the number of Wikipedia language editions with an "
+                f"article about the person (Wikidata sitelinks, the original record, as of {INFLUENCE.get('languages_as_of', '')}; "
+                "the measure MIT's Pantheon uses). Neutral and not part of Overall.")
+    return ("Influence measures reach, not impact. Attention = English Wikipedia page views for "
+            f"{INFLUENCE.get('period', '')} (Wikimedia Pageviews API, the original record). Neutral and not part of Overall.")
+
+
+def influence_ranking(unit=None):
+    """Public people by Wikipedia language editions (default) or 12-month English page views. Neutral."""
+    unit = unit or INFLUENCE_DEFAULT
+    field = "languages" if unit == "languages" else "views"
     names, images, pub = db.display_names(), db.people_images(), public_ids()
-    out = [{"person_id": pid, "name": pretty(pid, names), "net": float(d["views"]),
-            "label": f"{num(d['views'])} views", "lines": [], "estimated": False, "image_url": images.get(pid),
-            "wikipedia_title": d["title"]}
-           for pid, d in INFLUENCE.get("people", {}).items() if pid in pub]
+    out = [{"person_id": pid, "name": pretty(pid, names), "net": float(d[field]),
+            "label": f"{num(d[field])} {'languages' if field == 'languages' else 'views'}", "lines": [],
+            "estimated": False, "image_url": images.get(pid), "wikipedia_title": d["title"], "wikidata": d.get("wikidata")}
+           for pid, d in INFLUENCE.get("people", {}).items() if pid in pub and d.get(field) is not None]
     out.sort(key=lambda p: (-p["net"], p["person_id"]))
     return out
 DEFAULT_TAB = "lives"
@@ -711,6 +722,8 @@ def culture_unit_keys():
 def _culture_unit(tab, unit):
     if unit is None:
         return None
+    if tab == "influence" and unit in INFLUENCE_UNITS:
+        return unit
     if tab != "culture" or unit not in CULTURE_UNITS:
         raise HTTPException(422, f"unit is only for tab=culture, one of {list(CULTURE_UNITS)}")
     return unit
@@ -720,7 +733,7 @@ TAB_DESC = {"lives": "lives saved and lost", "people": "people helped and harmed
             "economy": "economic value created and destroyed, in US dollars", "climate": "greenhouse emissions (tCO2e)",
             "nature": "animals and hectares of nature protected and harmed", "culture": "certified sales, Grammys, Oscars and records",
             "overall": "their average position across the category tabs",
-            "influence": "reach and attention (Wikipedia page views), not impact"}
+            "influence": "reach (Wikipedia language editions and page views), not impact"}
 
 
 def tab_path(tab, unit=None):
@@ -729,14 +742,18 @@ def tab_path(tab, unit=None):
     return f"/?tab={tab}" + (f"&unit={unit}" if unit else "")
 
 
+def sub_label(tab, unit):
+    return (INFLUENCE_UNITS if tab == "influence" else CULTURE_UNITS)[unit][1]
+
+
 def tab_meta(tab, unit=None):
     """(h1, <title>, meta description) for a ranking tab."""
     label = next(t[1] for t in TABS if t[0] == tab).replace(" $", "")
     if unit:
-        label += f" \u00b7 {CULTURE_UNITS[unit][1]}"
+        label += f" \u00b7 {sub_label(tab, unit)}"
     h1 = f"{label} ranking: famous people by {TAB_DESC[tab]}" if not unit else f"{label} ranking"
     title = f"{label} ranking \u00b7 Output" if tab != DEFAULT_TAB or unit else "Output \u00b7 Famous people ranked by their impact on Earth"
-    desc = (f"Famous people ranked by {TAB_DESC[tab] if not unit else CULTURE_UNITS[unit][1]}. "
+    desc = (f"Famous people ranked by {TAB_DESC[tab] if not unit else sub_label(tab, unit)}. "
             "Only claims backed by 2 independent, trusted sources count; estimates are labeled est.")
     return h1, title, desc
 
@@ -745,7 +762,7 @@ def tab_ranking(tab, include_estimates=True, culture_unit=None):
     """People with counted entries in the tab's category, sorted by net in its own unit
     (economy: converted to USD with official rates). Returns [{person_id, name, net, lines, estimated, image_url}]."""
     if tab == "influence":
-        return influence_ranking()
+        return influence_ranking(culture_unit)
     _, _, cat, unit = next(t for t in TABS if t[0] == tab)
     r = rates()
     images = db.people_images()
@@ -801,10 +818,12 @@ def api_ranking(tab: str = DEFAULT_TAB, include_estimates: bool = True, unit: st
 def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT_TAB, unit: str = ""):
     if tab not in {t[0] for t in TABS}:
         tab = DEFAULT_TAB
-    unit = unit if tab == "culture" and unit in CULTURE_UNITS else None
+    unit = unit if (tab == "culture" and unit in CULTURE_UNITS) or (tab == "influence" and unit in INFLUENCE_UNITS) else None
+    if tab == "influence" and unit == INFLUENCE_DEFAULT:
+        unit = None
     uq = f"&unit={unit}" if unit else ""
     base = _base(request)
-    title = next(t[1] for t in TABS if t[0] == tab) + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else "")
+    title = next(t[1] for t in TABS if t[0] == tab) + (f" \u00b7 {sub_label(tab, unit)}" if unit else "")
     og = og_tags(f"Output \u00b7 Top 5 {title}", tab_meta(tab, unit)[2],
                  f"{base}/?tab={tab}{uq}", f"/cards/tab/{tab}.png" + (f"?unit={unit}" if unit else ""), base)
     cards = []
@@ -820,8 +839,12 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
         tabs += ('</nav><nav class="tabs sub">' + "".join(
             f'<a class="tab{" active" if k == cur else ""}" href="/?tab=culture&unit={k}{ex}">{CULTURE_UNITS[k][1]}</a>'
             for k in culture_unit_keys()))
+    if tab == "influence":
+        tabs += ('</nav><nav class="tabs sub">' + "".join(
+            f'<a class="tab{" active" if k == (unit or INFLUENCE_DEFAULT) else ""}" href="/?tab=influence'
+            f'{"" if k == INFLUENCE_DEFAULT else "&unit=" + k}">{lbl}</a>' for k, (_, lbl) in INFLUENCE_UNITS.items()))
     if tab != "overall":
-        for p in (ranked if tab == "culture" else tab_ranking(tab, include_estimates)):
+        for p in (ranked if tab == "culture" else tab_ranking(tab, include_estimates, unit if tab == "influence" else None)):
             pid = escape(p["person_id"])
             av = (f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy">' if p["image_url"]
                   else f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>')
@@ -843,7 +866,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
             f'<div class="positions">{escape(p["positions"])}</div></a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
     if tab == "influence":
-        grid = f'<p class="explain">{escape(INFLUENCE_EXPLAIN.format(period=INFLUENCE.get("period", "")))}</p>' + grid
+        grid = f'<p class="explain">{escape(influence_explain(unit))}</p>' + grid
     if tab == "overall":
         grid = (f'<p class="explain">{OVERALL_EXPLAIN}</p>' + grid
                 + (f'<h2 class="nedy">Not enough data yet</h2><p class="muted">Counted on fewer than {OVERALL_MIN_TABS} '
@@ -1079,12 +1102,14 @@ def card_tab_data(tab, unit=None):
             (u for u in CULTURE_RANK_UNITS if any(p["label"].endswith(" " + u) for p in ranked)), CULTURE_RANK_UNITS[-1])
         rows = [(p["name"], "+" if p["net"] >= 0 else "-", unit_label(p["net"], ru), p["estimated"]) for p in ranked[:5]]
     elif tab == "influence":
-        rows = [(p["name"], "=", p["label"], False) for p in tab_ranking(tab)[:5]]
-        note = "Reach/attention, not impact \u00b7 Wikipedia views " + INFLUENCE.get("period", "")
+        rows = [(p["name"], "=", p["label"], False) for p in tab_ranking(tab, culture_unit=unit)[:5]]
+        note = ("Reach, not impact \u00b7 Wikipedia language editions (Wikidata) " + INFLUENCE.get("languages_as_of", "")
+                if (unit or INFLUENCE_DEFAULT) == "languages" else
+                "Reach, not impact \u00b7 English Wikipedia views " + INFLUENCE.get("period", ""))
     else:
         rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab)[:5]]
     top = f"Top {len(rows)}" if rows else "Top"
-    title = f"{top} \u00b7 {t[1]}" + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else "")
+    title = f"{top} \u00b7 {t[1]}" + (f" \u00b7 {sub_label(tab, unit)}" if unit else "")
     return title, rows, note
 
 
@@ -1146,7 +1171,10 @@ def _person_totals(v):
     inf = INFLUENCE.get("people", {}).get(v["person_id"])
     if inf:
         url = "https://en.wikipedia.org/wiki/" + quote(inf["title"].replace(" ", "_"))
-        overall += (f"<p class='influence muted'>Influence (reach/attention, not impact): {num(inf['views'])} "
+        langs = (f"Wikipedia articles in <b>{num(inf['languages'])}</b> languages "
+                 f"(<a href='https://www.wikidata.org/wiki/{escape(inf.get('wikidata', ''))}' target='_blank' rel='noopener'>Wikidata</a>, "
+                 f"as of {escape(INFLUENCE.get('languages_as_of', ''))}); " if inf.get("languages") is not None else "")
+        overall += (f"<p class='influence muted'>Influence (reach, not impact): {langs}{num(inf['views'])} English "
                     f"<a href='{escape(url)}' target='_blank' rel='noopener'>Wikipedia</a> page views, "
                     f"{escape(INFLUENCE.get('period', ''))}. Not counted in the score.</p>")
     return ("<h2>Counted totals by category</h2><p class='muted'>Each category is totalled in its own unit; units are never added together.</p>"
@@ -1242,6 +1270,7 @@ def robots_txt(request: Request):
 def sitemap_xml(request: Request):
     base = _base(request)
     paths = [tab_path(t[0]) for t in TABS] + [tab_path("culture", u) for u in culture_unit_keys()]
+    paths += [tab_path("influence", u) for u in INFLUENCE_UNITS if u != INFLUENCE_DEFAULT]
     paths += [f"/people/{quote(pid)}" for pid in sorted(public_ids())] + ["/about", "/privacy"]
     urls = "".join(f"<url><loc>{escape(base + p)}</loc></url>" for p in dict.fromkeys(paths))
     return Response('<?xml version="1.0" encoding="UTF-8"?>'
@@ -1315,9 +1344,10 @@ Economy, Climate, Nature, Culture): 1st on a tab scores 100, last scores 0, line
 Culture counts as one tab (its Grammys, Oscars and Guinness sub-tabs are averaged). Nothing is converted into money
 and no category is converted into another. A person needs at least 2 tabs to be ranked; ties go to more tabs, then
 more counted entries.</li>
-<li>The <b>Influence</b> tab shows reach and attention, not impact: English Wikipedia page views over the last 12
-months, from the Wikimedia Pageviews API (the original record). It is neutral, never positive or negative, and is not
-part of Overall.</li>
+<li>The <b>Influence</b> tab shows reach, not impact. <i>Languages</i> (the main measure, for lasting influence) counts
+the Wikipedia language editions with an article about the person, from Wikidata (the original record; the same measure
+MIT's Pantheon uses). <i>Attention</i> is English Wikipedia page views over the last 12 months, from the Wikimedia
+Pageviews API. Influence is neutral, never positive or negative, and is not part of Overall.</li>
 <li>Outcomes of companies and foundations a person led or funded are credited to them, split by stated shares or evenly among named people.</li>
 </ul>
 <p>Every entry is reviewed before it counts. Anyone can <a href="/submit">submit</a> a claim with sources.</p>

@@ -825,23 +825,32 @@ def test_tab_positions_ties_and_single():
 
 def test_influence_tab_neutral(client, monkeypatch):
     from app import main as m
-    monkeypatch.setattr(m, "INFLUENCE", {"period": "P", "people": {"a": {"title": "A", "views": 5_000_000},
-                                                                    "b": {"title": "B", "views": 900},
-                                                                    "hidden": {"title": "H", "views": 10**9}}})
+    monkeypatch.setattr(m, "INFLUENCE", {"period": "P", "languages_as_of": "D", "people": {
+        "a": {"title": "A", "views": 5_000_000, "languages": 40, "wikidata": "Q1"},
+        "b": {"title": "B", "views": 900, "languages": 120, "wikidata": "Q2"},
+        "hidden": {"title": "H", "views": 10**9, "languages": 300}}})
     _approve(client, person_id="a", scale=1, unit="lives")
     _approve(client, person_id="a", scale=1, category="jobs", unit="jobs")
     _approve(client, person_id="b", scale=5, unit="lives")
     _approve(client, person_id="b", scale=5, category="jobs", unit="jobs")
     client.post("/api/people/hidden/publish", json={"published": True})  # published, nothing counted
     before = client.get("/api/ranking?tab=overall").json()
-    r = client.get("/api/ranking?tab=influence").json()
+    r = client.get("/api/ranking?tab=influence").json()  # default sub-tab: languages
+    assert [p["person_id"] for p in r] == ["b", "a"] and r[0]["label"] == "120 languages"
+    r = client.get("/api/ranking?tab=influence&unit=attention").json()
     assert [p["person_id"] for p in r] == ["a", "b"] and r[0]["label"] == "5 million views"
+    assert 'href="/?tab=influence&amp;unit=attention"' in client.get("/?tab=influence").text or \
+        'href="/?tab=influence&unit=attention"' in client.get("/?tab=influence").text
+    assert "Pantheon" in client.get("/?tab=influence").text and "page views" in client.get("/?tab=influence&unit=attention").text
+    assert "/?tab=influence&amp;unit=attention" in client.get("/sitemap.xml").text
     assert client.get("/api/ranking?tab=overall").json() == before
     assert all(t["tab"] != "Influence" for p in before for t in p["tabs"])
     assert client.get("/people/hidden").status_code == 404  # influence doesn't make anyone public
     h = client.get("/?tab=influence").text
-    assert "reach and attention, not impact" in h and 'class="other' not in h.split('<div class="grid">')[1]
+    assert "reach, not impact" in h and 'class="other' not in h.split('<div class="grid">')[1]
     assert "not impact" in client.get("/people/a").text and "Influence" in client.get("/about").text
     title, rows, note = m.card_tab_data("influence")
-    assert rows[0] == ("A", "=", "5 million views", False) and "not impact" in note
+    assert rows[0] == ("B", "=", "120 languages", False) and "not impact" in note and "Wikidata" in note
+    assert m.card_tab_data("influence", "attention")[1][0] == ("A", "=", "5 million views", False)
+    assert "40</b> languages" in client.get("/people/a").text
     assert client.get("/cards/tab/influence.png").status_code == 200
