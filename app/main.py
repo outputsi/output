@@ -6,7 +6,7 @@ import secrets
 import re
 import threading
 import time
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from html import escape
 from typing import Literal
 
@@ -166,6 +166,26 @@ def _cacheable(request):
     return not (q.get("preview") or q.get("admin_key") or request.headers.get("x-admin-key"))
 
 
+_CANONICAL_HOST = "outputrank.com"
+_DEV_HOSTS = frozenset({"testserver", "localhost", "127.0.0.1", "::1"})
+
+
+def _request_host(request):
+    raw = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    return raw.split(",")[0].strip().split(":")[0].lower()
+
+
+def _canonical_redirect(request):
+    """301 every public host that isn't outputrank.com onto the canonical origin, path and query kept."""
+    host = _request_host(request)
+    if not host or host == _CANONICAL_HOST or host in _DEV_HOSTS:
+        return None
+    path = request.url.path or "/"
+    query = request.url.query
+    dest = f"https://{_CANONICAL_HOST}{path}" + (f"?{query}" if query else "")
+    return RedirectResponse(dest, status_code=301)
+
+
 @app.middleware("http")
 async def cache_and_headers(request: Request, call_next):
     token = db.begin_request_cache()
@@ -176,12 +196,16 @@ async def cache_and_headers(request: Request, call_next):
 
 
 async def _cache_and_headers(request: Request, call_next):
-    if request.method == "POST" and request.url.path in RATE_LIMITED and not (
+    redir = _canonical_redirect(request)
+    if redir is not None:
+        resp = redir
+    elif request.method == "POST" and request.url.path in RATE_LIMITED and not (
             os.environ.get("ADMIN_KEY") and _admin_ok(request)) and not rate_ok(_client_ip(request)):
         resp = JSONResponse({"detail": "too many submissions, try again later"}, status_code=429,
                             headers={"Retry-After": str(RATE_WINDOW)})
     elif _cacheable(request):
-        key = (db.database_url() or db.DB_PATH, request.headers.get("x-forwarded-proto", ""), str(request.url))
+        key = (db.database_url() or db.DB_PATH, request.headers.get("x-forwarded-proto", ""),
+               os.environ.get("GOOGLE_SITE_VERIFICATION", ""), str(request.url))
         hit = _cache.get(key)
         if hit and time.time() - hit[0] < CACHE_TTL:
             resp = Response(hit[1], status_code=hit[2], headers=hit[3])
@@ -489,8 +513,10 @@ FAVICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rec
 def head_common(title, desc, canonical):
     """Viewport, title, description, canonical, favicon and AdSense: shared by every HTML page."""
     can = f'<link rel="canonical" href="{escape(canonical)}">' if canonical else ""
+    token = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip()
+    verify = f'<meta name="google-site-verification" content="{escape(token)}">' if token else ""
     return (f'<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{escape(title)}</title><meta name="description" content="{escape(desc)}">{can}'
+            f'<title>{escape(title)}</title><meta name="description" content="{escape(desc)}">{can}{verify}'
             '<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="icon" href="/favicon.ico" sizes="32x32">'
             f'{adsense_head()}')
 
@@ -530,10 +556,13 @@ def short_link(src):
     return f'<a href="{escape(src)}" target="_blank" rel="noopener" title="{escape(src)}">{escape(host)}</a>'
 
 
-def public_sources(e):
+def public_sources(e, public=False):
     out = short_link(e["source"])
     for x in e.get("extra_sources") or []:
-        q = f" <q>{escape(x['quote'])}</q>" if x.get("quote") else ""
+        quote = x.get("quote") or ""
+        if public:
+            quote = _clean_brackets(quote)
+        q = f" <q>{escape(quote)}</q>" if quote else ""
         out += f"<br><span class='extra-source'>+ {short_link(x['url'])}{q}</span>"
     return out
 
@@ -897,10 +926,8 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
         unit = None
     uq = f"&unit={unit}" if unit else ""
     base = _base(request)
-    title = next(t[1] for t in TABS if t[0] == tab) + (f" \u00b7 {sub_label(tab, unit)}" if unit else "")
-    og = og_tags(f"Output \u00b7 Top 5 {title}", tab_meta(tab, unit)[2],
-                 f"{base}/?tab={tab}{uq}", f"/cards/tab/{tab}.png" + (f"?unit={unit}" if unit else ""), base)
     cards = []
+    shown = []
     q = "" if include_estimates else "?include_estimates=0"
     ex = "" if include_estimates else "&include_estimates=0"
     toggle = (f'<a href="/?tab={tab}{uq}&include_estimates=0">Exclude estimates</a>' if include_estimates
@@ -908,6 +935,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     tabs = "".join(f'<a class="tab{" active" if k == tab else ""}" href="/?tab={k}{ex}">{lbl}</a>' for k, lbl, _, _ in TABS)
     if tab == "culture":
         ranked = tab_ranking(tab, include_estimates, unit)
+        shown = ranked
         cur = unit or next((k for k, (u, _) in CULTURE_UNITS.items() if ranked and ranked[0]["label"].endswith(" " + u)),
                            "certified" if "certified" in culture_unit_keys() else "grammys")
         tabs += ('</nav><nav class="tabs sub">' + "".join(
@@ -918,7 +946,9 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
             f'<a class="tab{" active" if k == (unit or INFLUENCE_DEFAULT) else ""}" href="/?tab=influence'
             f'{"" if k == INFLUENCE_DEFAULT else "&unit=" + k}">{lbl}</a>' for k, (_, lbl) in INFLUENCE_UNITS.items()))
     if tab != "overall":
-        for p in (ranked if tab == "culture" else tab_ranking(tab, include_estimates, unit if tab == "influence" else None)):
+        if tab != "culture":
+            shown = tab_ranking(tab, include_estimates, unit if tab == "influence" else None)
+        for p in shown:
             pid = escape(p["person_id"])
             av = (f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy"{img_fallback(p["person_id"])}>' if p["image_url"]
                   else f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>')
@@ -926,7 +956,9 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
                          f'<div class="name">{escape(p["name"])}</div><div class="score">{escape(p["label"])}'
                          f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>{other_html(p["lines"])}</a>')
     rest = []
-    for p in (ranking(include_estimates) if tab == "overall" else []):
+    if tab == "overall":
+        shown = ranking(include_estimates)
+    for p in shown if tab == "overall" else []:
         pid = escape(p["person_id"])
         if p["image_url"]:
             av = f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy"{img_fallback(p["person_id"])}>'
@@ -948,6 +980,8 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
                    f'<div class="grid">{"".join(rest)}</div>' if rest else ""))
     h1, ptitle, desc = tab_meta(tab, unit)
     canonical = base + tab_path(tab, unit)
+    og = og_tags(ptitle, desc, canonical, f"/cards/tab/{tab}.png" + (f"?unit={unit}" if unit else ""), base)
+    og += item_list_ld(h1, shown, base)
     return shell(ptitle, desc, canonical,
                  f'<h1 class="tab-h1">{escape(h1)}</h1><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}', og)
 
@@ -1046,10 +1080,53 @@ def ui_person_lookup(person_id: str):
     return RedirectResponse(f"/people/{person_id}", status_code=303)
 
 
-def _credit_cell(e):
+_BRACKET_NOTE = re.compile(r"\s*\[[^\[\]]*(?:CONFIRMS|EDITOR|INTERNAL|TODO|REVIEW|NOTE)[^\[\]]*\]", re.I)
+_HARD_NOTE = re.compile(r"(?i)(\brule\s*\d|\brules\s+\d|\breplaces entry\b|\breplaces\s*#|\bsupersedes\s*#)")
+_SOFT_NOTE = re.compile(
+    r"(?i)(\bmagnitude\b|\bcounterfactual\b|\bno people count\b|\bplaceholder\b|\blower bound\b|"
+    r"\bshared credit\b|\boverlaps\b|\bvague\b|\bscale 0\b)")
+_INTERNAL_CREDIT = re.compile(
+    r"(?i)(\bapproved\b|\bre-checked\b|\brechecked\b|\brule\s*\d|\brules\s+\d|\breplaces\b|\bsupersedes\b|"
+    r"\bfiling rule\b|\borganization credited\b|\bheadcount at one date\b|\bguinness record count\b|"
+    r"\bmagnitude\b|\blowest figure\b|\blowest documented\b|\bno court finding\b|\bprimary record\b|"
+    r"\bestimate rule\b|\bcounterfactual\b|\bplaceholder\b|\bscale 0\b)")
+
+
+def _clean_brackets(text):
+    text = _BRACKET_NOTE.sub(" ", text or "")
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def _drop_segment(part):
+    if _HARD_NOTE.search(part):
+        return True
+    return len(part) <= 180 and bool(_SOFT_NOTE.search(part))
+
+
+def public_action(text):
+    """Claim text for public pages: editor tags and trailing reviewer clauses removed."""
+    text = _clean_brackets(text)
+    if not text:
+        return ""
+    kept = [p.strip() for p in text.split(";") if p.strip() and not _drop_segment(p.strip())]
+    return "; ".join(kept)
+
+
+def public_credit_note(note):
+    """Public credit explanation. Reviewer process notes stay off the public page."""
+    note = _clean_brackets(note)
+    if not note or _INTERNAL_CREDIT.search(note):
+        return ""
+    return note
+
+
+def _credit_cell(e, public=False):
     badge = " <span class='badge'>est.</span>" if e["is_estimate"] else ""
-    note = f"<br><small>{escape(e['credit_note'])}</small>" if e.get("credit_note") else ""
-    return f"{escape(e['credit_label'])}{badge}{note}"
+    note = e.get("credit_note") or ""
+    if public:
+        note = public_credit_note(note)
+    note_html = f"<br><small>{escape(note)}</small>" if note else ""
+    return f"{escape(e['credit_label'])}{badge}{note_html}"
 
 
 def _cat_table(v):
@@ -1091,6 +1168,50 @@ def og_tags(title, desc, page_url, card_path, base):
             f'<meta property="og:image:height" content="675"><meta name="twitter:card" content="summary_large_image">'
             f'<meta name="twitter:title" content="{t}"><meta name="twitter:description" content="{dsc}">'
             f'<meta name="twitter:image" content="{i}">')
+
+
+def ld_script(data):
+    payload = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return f'<script type="application/ld+json">{payload}</script>'
+
+
+def item_list_ld(name, people, base):
+    return ld_script({
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": name,
+        "itemListElement": [
+            {"@type": "ListItem", "position": i, "name": p["name"],
+             "url": f"{base}/people/{quote(p['person_id'])}"}
+            for i, p in enumerate(people, 1)],
+    })
+
+
+def person_ld(name, url, image, same_as):
+    data = {"@context": "https://schema.org", "@type": "Person", "name": name, "url": url}
+    if image:
+        data["image"] = image
+    if same_as:
+        data["sameAs"] = same_as
+    return ld_script(data)
+
+
+def breadcrumb_ld(crumbs):
+    return ld_script({
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": i, "name": n, "item": u}
+            for i, (n, u) in enumerate(crumbs, 1)],
+    })
+
+
+def _abs_url(base, src):
+    if not src:
+        return None
+    if src.startswith(("http://", "https://")):
+        return src
+    return base + (src if src.startswith("/") else "/" + src)
 
 
 def person_card_lines(person_id, fmt=lambda v: f"{v:,.0f}"):
@@ -1197,35 +1318,184 @@ def card_tab(tab: str, size: str = "portrait", unit: str | None = None):
     return Response(png, media_type="image/png", headers=PNG_HEADERS)
 
 
-def person_description(name, lines):
-    """Short factual sentence from counted category totals."""
-    if not lines:
-        return f"{name} on Output: no counted entries yet. Unproven claims are listed separately and don't affect the score."
-    parts = ", ".join(t + (" (est.)" if est else "") for _, t, est in lines[:6])
-    return f"{name} on Output, counted impact backed by 2 trusted sources: {parts}."
+# Plain words for a counted total. (positive pair, negative pair) of (singular, plural).
+# Numbers still come from the existing category totals; only the wording is for readers.
+_UNIT_PHRASES = {
+    "lives": (("life saved", "lives saved"), ("life lost", "lives lost")),
+    "people": (("person helped", "people helped"), ("person harmed", "people harmed")),
+    "jobs": (("job created", "jobs created"), ("job cut", "jobs cut")),
+    "tCO2e": (("tonne of CO2e cut", "tonnes of CO2e cut"), ("tonne of CO2e emitted", "tonnes of CO2e emitted")),
+    "animals": (("animal protected", "animals protected"), ("animal harmed", "animals harmed")),
+    "hectares": (("hectare protected", "hectares protected"), ("hectare harmed", "hectares harmed")),
+    "academy-awards": (("Oscar", "Oscars"), ("Oscar lost", "Oscars lost")),
+    "grammys": (("Grammy", "Grammys"), ("Grammy lost", "Grammys lost")),
+    "guinness-records": (("Guinness World Record", "Guinness World Records"),
+                         ("Guinness World Record lost", "Guinness World Records lost")),
+    "certified-units": (("certified unit", "certified units"), ("certified unit lost", "certified units lost")),
+}
 
 
-def _entry_rows(es, cols):
+def _money(n):
+    n = abs(n)
+    if n >= 1_000_000:
+        return f"${num(n)}"
+    if n == int(n):
+        return f"${n:,.0f}"
+    return f"${n:,.2f}".rstrip("0").rstrip(".")
+
+
+def side_phrase(category, unit, amount, positive, estimated):
+    """Readable counted total, e.g. '~1 billion lives saved (est.)' or '2 Guinness World Records'."""
+    n = abs(amount)
+    if category == "economy":
+        core = f"{_money(n)} in economic value" if positive else f"{_money(n)} in economic losses"
+    else:
+        forms = _UNIT_PHRASES.get(unit)
+        if forms:
+            one, many = forms[0 if positive else 1]
+            word = one if n == 1 else many
+        else:
+            word = (unit or category or "").replace("-", " ")
+        core = f"{num(n)} {word}"
+    return f"~{core} (est.)" if estimated else core
+
+
+def _tab_for(category, unit):
+    for key, _label, cat, fixed in TABS:
+        if cat != category:
+            continue
+        if key == "culture":
+            uk = next((k for k, (uu, _) in CULTURE_UNITS.items() if uu == unit), None)
+            return "culture", uk
+        if fixed is None or fixed == unit:
+            return key, None
+    return None, None
+
+
+def counted_phrases(person_id, include_estimates=True):
+    """One phrase per counted positive or negative total. Economy is summed in USD, as on the cards."""
+    v = person_view(person_id, include_estimates)
+    est_keys = {((e.get("category") or "people"), (e.get("unit") or "people"))
+                for e in v["entries"] if e.get("is_estimate")}
+    r = rates()
+    econ_pos = econ_neg = 0.0
+    econ_est = False
+    has_econ = False
+    out = []
+    for c in v["categories"]:
+        key = (c["category"], c["unit"])
+        if c["category"] == "economy" and key in r:
+            econ_pos += c["positive_total"] * r[key]
+            econ_neg += c["negative_total"] * r[key]
+            econ_est = econ_est or key in est_keys
+            has_econ = True
+            continue
+        tab, uk = _tab_for(c["category"], c["unit"])
+        if c["positive_total"]:
+            out.append({"tab": tab, "unit_key": uk, "amount": c["positive_total"], "positive": True,
+                        "text": side_phrase(c["category"], c["unit"], c["positive_total"], True, key in est_keys)})
+        if c["negative_total"]:
+            out.append({"tab": tab, "unit_key": uk, "amount": c["negative_total"], "positive": False,
+                        "text": side_phrase(c["category"], c["unit"], c["negative_total"], False, key in est_keys)})
+    if has_econ:
+        if econ_pos:
+            out.append({"tab": "economy", "unit_key": None, "amount": econ_pos, "positive": True,
+                        "text": side_phrase("economy", "USD", econ_pos, True, econ_est)})
+        if econ_neg:
+            out.append({"tab": "economy", "unit_key": None, "amount": econ_neg, "positive": False,
+                        "text": side_phrase("economy", "USD", econ_neg, False, econ_est)})
+    return [p for p in out if p["tab"]]
+
+
+def person_placement(person_id, include_estimates=True):
+    """(phrases lead-first, tab, unit key, ranked rows) for the tab where this person ranks highest.
+
+    Ties go to the earlier tab (Lives before the rest). The lead phrase is the larger side of that total.
+    """
+    phrases = counted_phrases(person_id, include_estimates)
+    if not phrases:
+        return [], None, None, []
+    groups = {}
+    for p in phrases:
+        groups.setdefault((p["tab"], p["unit_key"]), []).append(p)
+    best = None
+    for (tab, uk), group in groups.items():
+        ranked = tab_ranking(tab, include_estimates, uk)
+        idx = next((i for i, row in enumerate(ranked) if row["person_id"] == person_id), 10**6)
+        tab_i = next(i for i, t in enumerate(TABS) if t[0] == tab)
+        unit_i = list(CULTURE_UNITS).index(uk) if uk in CULTURE_UNITS else 0
+        key = (idx, tab_i, unit_i)
+        if best is None or key < best[0]:
+            best = (key, tab, uk, ranked, group)
+    _, tab, uk, ranked, group = best
+    lead_group = sorted(group, key=lambda p: (-abs(p["amount"]), not p["positive"]))
+    rest = [p for p in phrases if p not in group]
+    rest.sort(key=lambda p: (next(i for i, t in enumerate(TABS) if t[0] == p["tab"]), not p["positive"], -abs(p["amount"])))
+    return lead_group + rest, tab, uk, ranked
+
+
+def person_meta(name, phrases):
+    """(<title>, meta description) leading with the top counted stat in plain words."""
+    if not phrases:
+        return (f"{name}: impact on Earth, counted \u00b7 Output",
+                f"{name} on Output: no counted entries yet. Unproven claims are listed separately and don't affect the score.")
+    bits = ", ".join(p["text"] for p in phrases[:6])
+    return (f"{name}: {phrases[0]['text']} \u00b7 Output",
+            f"{name}: {bits}. Counted impact on Output, backed by 2 trusted sources.")
+
+
+def person_intro(name, phrases, tab, unit_key, ranked, person_id):
+    """Opening line plus links to the other people on this person's top tab. No facts beyond counted totals."""
+    if not phrases or not tab:
+        return f"<p class='lede'>{escape(name)} has no counted entries yet.</p>"
+    lead, rest = phrases[0]["text"], [p["text"] for p in phrases[1:6]]
+    if rest:
+        sentence = f"{name}’s counted impact is {lead}, and also {', '.join(rest)}."
+    else:
+        sentence = f"{name}’s counted impact is {lead}."
+    label = next(t[1] for t in TABS if t[0] == tab).replace(" $", "")
+    if unit_key:
+        label += f" \u00b7 {sub_label(tab, unit_key)}"
+    href = tab_path(tab, unit_key)
+    tab_a = f'<a href="{escape(href)}">{escape(label)} ranking</a>'
+    others = [p for p in ranked if p["person_id"] != person_id]
+    if not others:
+        related = f"<p class='related'>See the {tab_a}.</p>"
+    else:
+        show = others[:8]
+        bits = [f'<a href="/people/{escape(p["person_id"])}">{escape(p["name"])}</a>' for p in show]
+        if len(bits) > 1:
+            links = ", ".join(bits[:-1]) + " and " + bits[-1]
+        else:
+            links = bits[0]
+        more = (f' <a href="{escape(href)}">{len(others) - len(show)} more</a>'
+                if len(others) > len(show) else "")
+        related = f"<p class='related'>Also on the {tab_a}: {links}.{more}</p>"
+    return f"<p class='lede'>{escape(sentence)}</p>{related}"
+
+
+def _entry_rows(es, cols, public=False):
     out = ""
     for e in es:
-        tds = [f"<td class='act'>{escape(e['action'])}</td>", f"<td class='src' data-l='Sources'>{public_sources(e)}</td>",
+        action = public_action(e["action"]) if public else e["action"]
+        tds = [f"<td class='act'>{escape(action)}</td>", f"<td class='src' data-l='Sources'>{public_sources(e, public)}</td>",
                f"<td class='r' data-l='Scale'>{num(e['scale'])}</td>"]
         if "credit" in cols:
-            tds.append(f"<td data-l='Credit'>{_credit_cell(e)}</td><td class='r' data-l='Counted'>{num(e['effective_scale'])}</td>")
+            tds.append(f"<td data-l='Credit'>{_credit_cell(e, public)}</td><td class='r' data-l='Counted'>{num(e['effective_scale'])}</td>")
         if "status" in cols:
             tds.append(f"<td data-l='Status'>{escape(e['status'])}</td>")
         out += f"<tr class='{'pos' if e['direction'] > 0 else 'neg'}-row'>{''.join(tds)}</tr>"
     return out
 
 
-def _entries_table(es, cols, empty):
+def _entries_table(es, cols, empty, public=False):
     head = "<th>Claim</th><th>Sources</th><th class='r'>Scale</th>"
     if "credit" in cols:
         head += "<th>Credit</th><th class='r'>Counted</th>"
     if "status" in cols:
         head += "<th>Status</th>"
     n = head.count("<th")
-    body = _entry_rows(es, cols) or f"<tr><td colspan={n} class='na'>{empty}</td></tr>"
+    body = _entry_rows(es, cols, public) or f"<tr><td colspan={n} class='na'>{empty}</td></tr>"
     return f"<div class='tw'><table class='entries'><tr>{head}</tr>{body}</table></div>"
 
 
@@ -1272,6 +1542,8 @@ td.act{min-width:180px}td.src{min-width:120px;word-break:break-word}td.src q{col
 .person-head{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
 .person-head img,.person-head .avatar{width:120px;height:120px;border-radius:50%;object-fit:cover;flex:none}
 .photo-credit{font-size:.75em;color:#666;margin:.3em 0 0}
+.lede{font-size:1.05em;margin:.4em 0 .2em}
+.related{margin:.2em 0 1em;font-size:.95em}
 .side{border-radius:10px;padding:2px 14px 10px;margin:14px 0;background:#fff}
 .side.green{border-top:4px solid #1a8f4c}.side.red{border-top:4px solid #c93a3a}
 .side h3.pos,.nc-pos{color:#1a8f4c}.side h3.neg,.nc-neg{color:#c93a3a}
@@ -1299,19 +1571,20 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
               else f"<a href='/people/{pid}'>Include estimates</a>")
     pos = [e for e in v["entries"] if e["direction"] > 0]
     neg = [e for e in v["entries"] if e["direction"] < 0]
+    public = not preview
     counted = ("<h2>Counted entries</h2><p class='muted'>Approved claims with 2 trusted sources; these drive the totals "
                "(counted = scale \u00d7 credit share).</p>"
-               f"<section class='side green'><h3 class='pos'>Positive</h3>{_entries_table(pos, ('credit',), 'None.')}</section>"
-               f"<section class='side red'><h3 class='neg'>Negative</h3>{_entries_table(neg, ('credit',), 'None.')}</section>")
+               f"<section class='side green'><h3 class='pos'>Positive</h3>{_entries_table(pos, ('credit',), 'None.', public)}</section>"
+               f"<section class='side red'><h3 class='neg'>Negative</h3>{_entries_table(neg, ('credit',), 'None.', public)}</section>")
     est = ""
     if v["estimates"]:
         est = ("<h2>Estimates (excluded)</h2><p class='muted'>Approved but marked as estimates; not counted unless estimates are included.</p>"
-               + _entries_table(v["estimates"], ("credit",), "None."))
+               + _entries_table(v["estimates"], ("credit",), "None.", public))
     def nc_table(sign, title):
         cls = "pos" if sign > 0 else "neg"
         es = [e for e in v["not_counted"] if e["direction"] == sign]
         return (f"<section class='side {'green' if sign > 0 else 'red'} uncounted'><h3 class='nc-{cls}'>{title}</h3>"
-                f"{_entries_table(es, ('status',), 'None.')}</section>")
+                f"{_entries_table(es, ('status',), 'None.', public)}</section>")
     nc = nc_table(1, "Not counted, positive") + nc_table(-1, "Not counted, negative")
     pr = db.get_person(person_id)
     photo = f'<div class="avatar">{escape(initials(person_id))}</div>'
@@ -1324,15 +1597,26 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
                         if lic.startswith(("http://", "https://")) else "")
             credit = f'<p class="photo-credit">Photo: {escape(pr["image_credit"] or "")}{lic_html}</p>'
     base = _base(request)
-    desc = person_description(name, person_card_lines(person_id, num))
-    head = og_tags(f"{name} on Output", desc, f"{base}/people/{pid}", f"/cards/person/{pid}.png", base)
+    canonical = f"{base}/people/{pid}"
+    phrases, top_tab, top_unit, ranked = person_placement(person_id, include_estimates)
+    title, desc = person_meta(name, phrases)
+    intro = person_intro(name, phrases, top_tab, top_unit, ranked, person_id)
+    image = _abs_url(base, photo_src(person_id, pr["image_url"])) if pr and pr["image_url"] else None
+    inf = INFLUENCE.get("people", {}).get(person_id) or {}
+    same = []
+    if inf.get("title"):
+        same.append("https://en.wikipedia.org/wiki/" + quote(inf["title"].replace(" ", "_")))
+    if inf.get("wikidata"):
+        same.append(f"https://www.wikidata.org/wiki/{inf['wikidata']}")
+    head = (og_tags(title, desc, canonical, f"/cards/person/{pid}.png", base)
+            + person_ld(name, canonical, image, same)
+            + breadcrumb_ld([("Output", base + "/"), (name, canonical)]))
     fb = f"<a href='/feedback?page=/people/{quote(person_id)}'>Suggest a correction or a claim</a>"
     body = (f"<div class='person-head'>{photo}<div><h1>{escape(name)}</h1>{credit}<p class='toggle'>{toggle} · {fb}</p></div></div>"
-            f"{_person_totals(v)}{counted}{est}"
+            f"{intro}{_person_totals(v)}{counted}{est}"
             "<h2>Not counted / unproven</h2><p class='muted'>Unproven or rejected claims. They are shown for transparency and do not affect the totals.</p>"
             f"{nc}")
-    return shell(f"{name}: impact on Earth, counted \u00b7 Output", desc, f"{base}/people/{pid}",
-                 f"<article class='doc'>{body}</article>", head)
+    return shell(title, desc, canonical, f"<article class='doc'>{body}</article>", head)
 
 
 # ---------- feedback + admin pages ----------
@@ -1412,13 +1696,40 @@ def robots_txt(request: Request):
     return Response(f"User-agent: *\nAllow: /\nDisallow: /admin/\n\nSitemap: {_base(request)}/sitemap.xml\n", media_type="text/plain")
 
 
+def _sitemap_dates():
+    """YYYY-MM-DD of the newest entry, plus the newest date for each person."""
+    site, by_person = None, {}
+    for e in db.all_entries():
+        days = []
+        for key in ("reviewed_at", "created_at"):
+            raw = str(e.get(key) or "")[:10]
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+                days.append(raw)
+        if not days:
+            continue
+        day = max(days)
+        site = day if site is None or day > site else site
+        pid = e["person_id"]
+        if pid not in by_person or day > by_person[pid]:
+            by_person[pid] = day
+    if site is None:
+        site = time.strftime("%Y-%m-%d", time.gmtime())
+    return site, by_person
+
+
 @app.get("/sitemap.xml", include_in_schema=False)
 def sitemap_xml(request: Request):
     base = _base(request)
     paths = [tab_path(t[0]) for t in TABS] + [tab_path("culture", u) for u in culture_unit_keys()]
     paths += [tab_path("influence", u) for u in INFLUENCE_UNITS if u != INFLUENCE_DEFAULT]
     paths += [f"/people/{quote(pid)}" for pid in sorted(public_ids())] + ["/about", "/privacy"]
-    urls = "".join(f"<url><loc>{escape(base + p)}</loc></url>" for p in dict.fromkeys(paths))
+    site_day, by_person = _sitemap_dates()
+    urls = ""
+    for p in dict.fromkeys(paths):
+        day = site_day
+        if p.startswith("/people/"):
+            day = by_person.get(unquote(p[len("/people/"):]), site_day)
+        urls += f"<url><loc>{escape(base + p)}</loc><lastmod>{day}</lastmod></url>"
     return Response('<?xml version="1.0" encoding="UTF-8"?>'
                     f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
                     media_type="application/xml")
