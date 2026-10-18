@@ -1034,12 +1034,12 @@ def person_description(name, lines):
 def _entry_rows(es, cols):
     out = ""
     for e in es:
-        tds = [f"<td class='act'>{escape(e['action'])}</td>", f"<td class='src'>{public_sources(e)}</td>",
-               f"<td class='r'>{num(e['scale'])}</td>"]
+        tds = [f"<td class='act'>{escape(e['action'])}</td>", f"<td class='src' data-l='Sources'>{public_sources(e)}</td>",
+               f"<td class='r' data-l='Scale'>{num(e['scale'])}</td>"]
         if "credit" in cols:
-            tds.append(f"<td>{_credit_cell(e)}</td><td class='r'>{num(e['effective_scale'])}</td>")
+            tds.append(f"<td data-l='Credit'>{_credit_cell(e)}</td><td class='r' data-l='Counted'>{num(e['effective_scale'])}</td>")
         if "status" in cols:
-            tds.append(f"<td>{escape(e['status'])}</td>")
+            tds.append(f"<td data-l='Status'>{escape(e['status'])}</td>")
         out += f"<tr class='{'pos' if e['direction'] > 0 else 'neg'}-row'>{''.join(tds)}</tr>"
     return out
 
@@ -1099,7 +1099,13 @@ td.act{min-width:180px}td.src{min-width:120px;word-break:break-word}td.src q{col
 .site-footer{margin:3em 0 1em;padding:1em 16px 0;border-top:1px solid #ddd;font-size:.85em;color:#666;text-align:center}
 .site-footer a{color:#555}
 @media (max-width:600px){.top{padding:12px 16px}.top nav a{margin-left:14px}main{padding:16px 12px}
-.grid{grid-template-columns:repeat(2,1fr);gap:16px 8px}.avatar{width:96px;height:96px}h1{font-size:1.35em}}
+.grid{grid-template-columns:repeat(2,1fr);gap:16px 8px}.avatar{width:96px;height:96px}h1{font-size:1.35em}
+table.cats{font-size:.82em}table.cats td,table.cats th{padding:6px 4px}
+table.entries,table.entries tbody,table.entries tr,table.entries td{display:block;width:100%}
+table.entries tr:first-child{display:none}table.entries tr{border-bottom:1px solid #e5e5e5;padding:6px 0 6px 10px}
+table.entries td{border:0;padding:3px 0;text-align:left;white-space:normal;min-width:0}
+table.entries td.act{font-weight:500}table.entries td[data-l]::before{content:attr(data-l) ": ";color:#888;font-size:.85em}
+.pos-row td:first-child,.neg-row td:first-child{border-left:0}.pos-row{border-left:4px solid #1a8f4c}.neg-row{border-left:4px solid #c93a3a}}
 """
 
 
