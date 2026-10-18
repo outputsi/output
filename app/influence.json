@@ -1,0 +1,217 @@
+{
+ "metric": "wikipedia-views",
+ "label": "Wikipedia views, last 12 months",
+ "period": "2025-10-01 to 2026-09-30",
+ "as_of": "2026-10-18",
+ "source": "Wikimedia Pageviews API (English Wikipedia, all access, human users), the original record",
+ "people": {
+  "ariana-grande": {
+   "title": "Ariana Grande",
+   "views": 6740785
+  },
+  "bad-bunny": {
+   "title": "Bad Bunny",
+   "views": 9105280
+  },
+  "bernard-arnault": {
+   "title": "Bernard Arnault",
+   "views": 996144
+  },
+  "beyonce": {
+   "title": "Beyoncé",
+   "views": 2651238
+  },
+  "bill-gates": {
+   "title": "Bill Gates",
+   "views": 2514625
+  },
+  "billie-eilish": {
+   "title": "Billie Eilish",
+   "views": 3655733
+  },
+  "cristiano-ronaldo": {
+   "title": "Cristiano Ronaldo",
+   "views": 15607601
+  },
+  "donald-trump": {
+   "title": "Donald Trump",
+   "views": 19881324
+  },
+  "doug-mcmillon": {
+   "title": "Doug McMillon",
+   "views": 119784
+  },
+  "drake": {
+   "title": "Drake (musician)",
+   "views": 2736443
+  },
+  "dwayne-johnson": {
+   "title": "Dwayne Johnson",
+   "views": 3934233
+  },
+  "elon-musk": {
+   "title": "Elon Musk",
+   "views": 8458139
+  },
+  "fritz-haber": {
+   "title": "Fritz Haber",
+   "views": 335155
+  },
+  "harold-shipman": {
+   "title": "Harold Shipman",
+   "views": 1048389
+  },
+  "jamie-dimon": {
+   "title": "Jamie Dimon",
+   "views": 1139809
+  },
+  "jay-z": {
+   "title": "Jay-Z",
+   "views": 1994987
+  },
+  "jeff-bezos": {
+   "title": "Jeff Bezos",
+   "views": 10563087
+  },
+  "jensen-huang": {
+   "title": "Jensen Huang",
+   "views": 2711605
+  },
+  "joe-biden": {
+   "title": "Joe Biden",
+   "views": 4552577
+  },
+  "kanye-west": {
+   "title": "Kanye West",
+   "views": 3820115
+  },
+  "kendrick-lamar": {
+   "title": "Kendrick Lamar",
+   "views": 1959588
+  },
+  "kylie-jenner": {
+   "title": "Kylie Jenner",
+   "views": 3844291
+  },
+  "larry-ellison": {
+   "title": "Larry Ellison",
+   "views": 2923522
+  },
+  "lebron-james": {
+   "title": "LeBron James",
+   "views": 6718492
+  },
+  "leonardo-dicaprio": {
+   "title": "Leonardo DiCaprio",
+   "views": 5264347
+  },
+  "lionel-messi": {
+   "title": "Lionel Messi",
+   "views": 15245006
+  },
+  "lisa-su": {
+   "title": "Lisa Su",
+   "views": 669746
+  },
+  "mark-zuckerberg": {
+   "title": "Mark Zuckerberg",
+   "views": 2250400
+  },
+  "mary-barra": {
+   "title": "Mary Barra",
+   "views": 201778
+  },
+  "meryl-streep": {
+   "title": "Meryl Streep",
+   "views": 4340106
+  },
+  "michael-dell": {
+   "title": "Michael Dell",
+   "views": 864345
+  },
+  "michael-jordan": {
+   "title": "Michael Jordan",
+   "views": 4432803
+  },
+  "mrbeast": {
+   "title": "MrBeast",
+   "views": 3644115
+  },
+  "mukesh-ambani": {
+   "title": "Mukesh Ambani",
+   "views": 1186701
+  },
+  "neymar": {
+   "title": "Neymar",
+   "views": 5417828
+  },
+  "nicholas-winton": {
+   "title": "Nicholas Winton",
+   "views": 620462
+  },
+  "norman-borlaug": {
+   "title": "Norman Borlaug",
+   "views": 211289
+  },
+  "oprah-winfrey": {
+   "title": "Oprah Winfrey",
+   "views": 1472023
+  },
+  "oskar-schindler": {
+   "title": "Oskar Schindler",
+   "views": 1031663
+  },
+  "rihanna": {
+   "title": "Rihanna",
+   "views": 3447265
+  },
+  "satya-nadella": {
+   "title": "Satya Nadella",
+   "views": 748200
+  },
+  "serena-williams": {
+   "title": "Serena Williams",
+   "views": 2550543
+  },
+  "shakira": {
+   "title": "Shakira",
+   "views": 6227530
+  },
+  "sundar-pichai": {
+   "title": "Sundar Pichai",
+   "views": 1191662
+  },
+  "taylor-swift": {
+   "title": "Taylor Swift",
+   "views": 7780345
+  },
+  "tiger-woods": {
+   "title": "Tiger Woods",
+   "views": 3016199
+  },
+  "tim-cook": {
+   "title": "Tim Cook",
+   "views": 1651280
+  },
+  "tom-cruise": {
+   "title": "Tom Cruise",
+   "views": 5447074
+  },
+  "tom-hanks": {
+   "title": "Tom Hanks",
+   "views": 3586494
+  },
+  "usain-bolt": {
+   "title": "Usain Bolt",
+   "views": 1349042
+  },
+  "warren-buffett": {
+   "title": "Warren Buffett",
+   "views": 2288569
+  },
+  "will-smith": {
+   "title": "Will Smith",
+   "views": 2437075
+  }
+ }
+}

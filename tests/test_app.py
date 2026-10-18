@@ -821,3 +821,27 @@ def test_tab_positions_ties_and_single():
     assert _tab_positions([{"person_id": "x", "net": 1}]) == {"x": (1, 1, 100.0)}
     t = _tab_positions([{"person_id": p, "net": n} for p, n in (("a", 5), ("b", 5), ("c", 1))])
     assert t["a"] == t["b"] == (1, 3, 100.0) and t["c"] == (3, 3, 0.0)
+
+
+def test_influence_tab_neutral(client, monkeypatch):
+    from app import main as m
+    monkeypatch.setattr(m, "INFLUENCE", {"period": "P", "people": {"a": {"title": "A", "views": 5_000_000},
+                                                                    "b": {"title": "B", "views": 900},
+                                                                    "hidden": {"title": "H", "views": 10**9}}})
+    _approve(client, person_id="a", scale=1, unit="lives")
+    _approve(client, person_id="a", scale=1, category="jobs", unit="jobs")
+    _approve(client, person_id="b", scale=5, unit="lives")
+    _approve(client, person_id="b", scale=5, category="jobs", unit="jobs")
+    client.post("/api/people/hidden/publish", json={"published": True})  # published, nothing counted
+    before = client.get("/api/ranking?tab=overall").json()
+    r = client.get("/api/ranking?tab=influence").json()
+    assert [p["person_id"] for p in r] == ["a", "b"] and r[0]["label"] == "5 million views"
+    assert client.get("/api/ranking?tab=overall").json() == before
+    assert all(t["tab"] != "Influence" for p in before for t in p["tabs"])
+    assert client.get("/people/hidden").status_code == 404  # influence doesn't make anyone public
+    h = client.get("/?tab=influence").text
+    assert "reach and attention, not impact" in h and 'class="other' not in h.split('<div class="grid">')[1]
+    assert "not impact" in client.get("/people/a").text and "Influence" in client.get("/about").text
+    title, rows, note = m.card_tab_data("influence")
+    assert rows[0] == ("A", "=", "5 million views", False) and "not impact" in note
+    assert client.get("/cards/tab/influence.png").status_code == 200

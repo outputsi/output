@@ -172,3 +172,7 @@ Twitter tags pointing at the `?size=x` card; set `PUBLIC_URL` to force the absol
 - Person photos are mirrored in `app/static/people/` (`tools/fetch_photos.py`, manifest maps person_id to source URL); the local copy is used only while the DB `image_url` matches.
 - Public GET pages, cards and `/api/ranking` are cached in memory; any successful write clears the cache (10 min TTL as a safety net).
 - `/submit` and `/import` POSTs: 10 per hour per IP. `/docs`, `/redoc`, `/openapi.json` need the admin key when `ADMIN_KEY` is set.
+
+## Influence tab
+
+Neutral reach/attention tab (`?tab=influence`, `/api/ranking?tab=influence`): English Wikipedia page views for the last 12 months from the Wikimedia Pageviews API, stored in `app/influence.json` (period, as-of date, article title). Never positive/negative, excluded from Overall and its 2-tab minimum, and does not make anyone public.

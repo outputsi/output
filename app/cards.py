@@ -114,7 +114,7 @@ def tab_card(title, rows, size="portrait", note="Sourced, counted entries only")
         dr.text((60, y), "No counted entries yet", font=font(40), fill=MUTED, anchor="lm")
     for i, (name, sign, label, est) in enumerate(rows[:5], 1):
         lab = label + ("  est." if est else "")
-        col = GREEN if sign == "+" else RED
+        col = GREEN if sign == "+" else RED if sign == "-" else INK
         if portrait:  # name, then its number underneath
             dr.text((60, y), f"{i}.", font=font(52, True), fill=MUTED, anchor="lm")
             dr.text((150, y), name, font=_fit(dr, name, 52, W - 210, True), fill=INK, anchor="lm")

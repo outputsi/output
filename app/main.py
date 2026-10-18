@@ -566,7 +566,7 @@ def ranking(include_estimates=True):
     names, images = db.display_names(), db.people_images()
     pos = {}  # pid -> [(tab label, rank, of, pct)]
     for key, label, _, _ in TABS:
-        if key == "overall":
+        if key == "overall" or key in NEUTRAL_TABS:
             continue
         if key == "culture":
             sub = {}
@@ -672,7 +672,27 @@ def share_label(p):
 TABS = [("lives", "Lives", "people", "lives"), ("people", "People", "people", "people"), ("jobs", "Jobs", "jobs", None),
         ("economy", "Economy $", "economy", None), ("climate", "Climate", "climate", None),
         ("nature", "Nature", "nature", None),
-        ("culture", "Culture", "culture", None), ("overall", "Overall", None, None)]
+        ("culture", "Culture", "culture", None), ("influence", "Influence", None, None), ("overall", "Overall", None, None)]
+NEUTRAL_TABS = {"influence"}  # reach/attention: never positive/negative, never in Overall or the public rule
+
+try:
+    with open(os.path.join(os.path.dirname(__file__), "influence.json")) as _f:
+        INFLUENCE = json.load(_f)
+except (OSError, ValueError):
+    INFLUENCE = {"people": {}}
+INFLUENCE_EXPLAIN = ("Influence measures reach and attention, not impact: English Wikipedia page views for "
+                     "{period} (Wikimedia Pageviews API, the original record). It is neutral and not part of Overall.")
+
+
+def influence_ranking():
+    """Public people by Wikipedia page views (neutral; net = views)."""
+    names, images, pub = db.display_names(), db.people_images(), public_ids()
+    out = [{"person_id": pid, "name": pretty(pid, names), "net": float(d["views"]),
+            "label": f"{num(d['views'])} views", "lines": [], "estimated": False, "image_url": images.get(pid),
+            "wikipedia_title": d["title"]}
+           for pid, d in INFLUENCE.get("people", {}).items() if pid in pub]
+    out.sort(key=lambda p: (-p["net"], p["person_id"]))
+    return out
 DEFAULT_TAB = "lives"
 CULTURE_RANK_UNITS = ("certified-units", "grammys")  # rank by certified units once any are approved, else Grammys
 # Culture sub-toggles: ?tab=culture&unit=<key>; each ranks one unit only, never summed.
@@ -699,7 +719,8 @@ def _culture_unit(tab, unit):
 TAB_DESC = {"lives": "lives saved and lost", "people": "people helped and harmed", "jobs": "jobs created and cut",
             "economy": "economic value created and destroyed, in US dollars", "climate": "greenhouse emissions (tCO2e)",
             "nature": "animals and hectares of nature protected and harmed", "culture": "certified sales, Grammys, Oscars and records",
-            "overall": "their average position across the category tabs"}
+            "overall": "their average position across the category tabs",
+            "influence": "reach and attention (Wikipedia page views), not impact"}
 
 
 def tab_path(tab, unit=None):
@@ -723,6 +744,8 @@ def tab_meta(tab, unit=None):
 def tab_ranking(tab, include_estimates=True, culture_unit=None):
     """People with counted entries in the tab's category, sorted by net in its own unit
     (economy: converted to USD with official rates). Returns [{person_id, name, net, lines, estimated, image_url}]."""
+    if tab == "influence":
+        return influence_ranking()
     _, _, cat, unit = next(t for t in TABS if t[0] == tab)
     r = rates()
     images = db.people_images()
@@ -819,6 +842,8 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
             f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>'
             f'<div class="positions">{escape(p["positions"])}</div></a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
+    if tab == "influence":
+        grid = f'<p class="explain">{escape(INFLUENCE_EXPLAIN.format(period=INFLUENCE.get("period", "")))}</p>' + grid
     if tab == "overall":
         grid = (f'<p class="explain">{OVERALL_EXPLAIN}</p>' + grid
                 + (f'<h2 class="nedy">Not enough data yet</h2><p class="muted">Counted on fewer than {OVERALL_MIN_TABS} '
@@ -1053,6 +1078,9 @@ def card_tab_data(tab, unit=None):
         ru = CULTURE_UNITS[unit][0] if unit else next(
             (u for u in CULTURE_RANK_UNITS if any(p["label"].endswith(" " + u) for p in ranked)), CULTURE_RANK_UNITS[-1])
         rows = [(p["name"], "+" if p["net"] >= 0 else "-", unit_label(p["net"], ru), p["estimated"]) for p in ranked[:5]]
+    elif tab == "influence":
+        rows = [(p["name"], "=", p["label"], False) for p in tab_ranking(tab)[:5]]
+        note = "Reach/attention, not impact \u00b7 Wikipedia views " + INFLUENCE.get("period", "")
     else:
         rows = [(p["name"], "+" if p["net"] >= 0 else "-", p["label"], p["estimated"]) for p in tab_ranking(tab)[:5]]
     top = f"Top {len(rows)}" if rows else "Top"
@@ -1115,6 +1143,12 @@ def _person_totals(v):
         overall = ("<p class='overall'>" + (f"Overall score <b>{me['score']:.0f}</b> (average tab position, 100 = 1st), from "
                    if me["ranked"] else f"Overall: not enough data yet (needs {OVERALL_MIN_TABS} category tabs). Tab positions: ")
                    + f"{escape(me['positions'])}</p>")
+    inf = INFLUENCE.get("people", {}).get(v["person_id"])
+    if inf:
+        url = "https://en.wikipedia.org/wiki/" + quote(inf["title"].replace(" ", "_"))
+        overall += (f"<p class='influence muted'>Influence (reach/attention, not impact): {num(inf['views'])} "
+                    f"<a href='{escape(url)}' target='_blank' rel='noopener'>Wikipedia</a> page views, "
+                    f"{escape(INFLUENCE.get('period', ''))}. Not counted in the score.</p>")
     return ("<h2>Counted totals by category</h2><p class='muted'>Each category is totalled in its own unit; units are never added together.</p>"
             "<div class='tw'><table class='cats'><tr><th>Category</th><th>Unit</th><th class='r'>Positive</th>"
             f"<th class='r'>Negative</th><th class='r'>Net</th></tr>{rows}</table></div>{overall}")
@@ -1281,6 +1315,9 @@ Economy, Climate, Nature, Culture): 1st on a tab scores 100, last scores 0, line
 Culture counts as one tab (its Grammys, Oscars and Guinness sub-tabs are averaged). Nothing is converted into money
 and no category is converted into another. A person needs at least 2 tabs to be ranked; ties go to more tabs, then
 more counted entries.</li>
+<li>The <b>Influence</b> tab shows reach and attention, not impact: English Wikipedia page views over the last 12
+months, from the Wikimedia Pageviews API (the original record). It is neutral, never positive or negative, and is not
+part of Overall.</li>
 <li>Outcomes of companies and foundations a person led or funded are credited to them, split by stated shares or evenly among named people.</li>
 </ul>
 <p>Every entry is reviewed before it counts. Anyone can <a href="/submit">submit</a> a claim with sources.</p>
