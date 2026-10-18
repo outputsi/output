@@ -175,8 +175,9 @@ def test_home_ranking_order(client):
     r = client.get("/?tab=overall")
     assert r.status_code == 200
     h = r.text
-    # all-positive people tie at 100%: more counted entries first, then name; all-negative last
-    order = [h.index(f'data-person="{p}"') for p in ("low-guy", "top-person", "neg-one")]
+    # one tab each -> all listed under "Not enough data yet", ordered by entries then name
+    assert "Not enough data yet" in h
+    order = [h.index(f'data-person="{p}"') for p in ("low-guy", "neg-one", "top-person")]
     assert order == sorted(order) and 'data-person="pending-only"' not in h
     assert 'href="/people/top-person"' in h and "Top Person" in h
 
@@ -224,7 +225,6 @@ def test_pct_display(client):
     assert client.get("/api/people/jonas-salk").json()["positive_pct"] == 100
     assert client.get("/api/people/nobody?preview=1").json()["positive_pct"] is None
     h = client.get("/?tab=overall").text
-    assert '<span class="pos">100%</span> · <span class="neg">0%</span>' in h
     assert 'data-person="nobody"' not in h and "9,237.5" not in h and "bar" not in h
     t = client.get("/people/jonas-salk").text
     assert "Positive:" not in t and "Positive share" not in t  # no mixed-unit headline
@@ -241,8 +241,7 @@ def test_home_90_10_bar(client):
     _approve(client, person_id="mixed", scale=90, category="climate", unit="tCO2e")
     _approve(client, person_id="mixed", scale=10, direction=-1, category="climate", unit="tCO2e")
     assert client.get("/api/people/mixed").json()["overall"]["negative_pct"] == pytest.approx(10)
-    h = client.get("/?tab=overall").text
-    assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
+    assert '<div class="positions">Climate #1</div>' in client.get("/?tab=overall").text
 
 
 # ---------- credit sharing ----------
@@ -435,7 +434,7 @@ def test_categories_and_overall(client):
     assert set(ov["not_convertible"]) == {"jobs (jobs)", "people (people)"}
     assert sub(client, category="climate", unit="USD").status_code == 422
     h = client.get("/people/cat").text
-    assert "Counted totals by category" in h and "Not converted (own units): jobs (jobs), people (people)" in h
+    assert "Counted totals by category" in h and "Overall score <b>" in h and "Lives #1" in h
     assert "$" not in client.get("/?tab=overall").text.split('<div class="grid">')[1]
     assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
@@ -471,8 +470,8 @@ def test_nonconvertible_lines_shown(client):
     _approve(client, person_id="mix2", scale=500, category="jobs", unit="jobs")
     _approve(client, person_id="zero-but-counted", scale=50)
     h = client.get("/?tab=overall").text
-    assert '<div class="other neg">-78,000 people</div>' in h and '<div class="other pos">+500 jobs</div>' in h
-    assert 'data-person="zero-but-counted"' in h and "+50 people" in h
+    assert '<div class="positions">Lives #1, People #2, Jobs #1</div>' in h and "Score 67" in h
+    assert 'data-person="zero-but-counted"' in h
     assert "-78,000 people" in client.get("/people/mix2").text
     assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
 
@@ -646,8 +645,7 @@ def test_overall_card_skips_zero_and_formats_big(client):
     _approve(client, person_id="saver", scale=10, direction=1, category="people", unit="lives", is_estimate=True)
     title, rows, note = m.card_tab_data("overall")
     assert "singer" not in [r[0].lower() for r in rows] and all(r[2] not in ("$0", "+$0") for r in rows)
-    assert title == f"Top {len(rows)} \u00b7 Overall" and "share of counted impact that is positive" in note.lower()
-    assert rows == [("Saver", "+", "100% positive \u00b7 0% negative", True)] and "$" not in note
+    assert title == "Top \u00b7 Overall" and rows == [] and "$" not in note  # nobody has 2 tabs yet
     assert m.card_usd(1.42e16) == "+$14.2 quadrillion" and m.card_usd(1.56e10) == "+$15.6 billion"
     assert m.card_usd(-2.5e12) == "-$2.5 trillion" and m.card_usd(9.5e5) == "+$950K"
     assert m.card_usd(3e18) == "+$3,000 quadrillion"
@@ -796,17 +794,30 @@ def test_published_needs_counted_entry(client, monkeypatch):
     assert client.get("/people/nocount?preview=1&admin_key=k").status_code == 200
 
 
-def test_overall_ranks_by_positive_pct(client):
-    _approve(client, person_id="mixed", scale=90, unit="lives")
-    _approve(client, person_id="mixed", scale=10, direction=-1, unit="lives")
-    _approve(client, person_id="pure-a", scale=1, unit="lives")
-    _approve(client, person_id="pure-b", scale=1, unit="lives")
-    _approve(client, person_id="pure-b", scale=1000, unit="lives")
-    _approve(client, person_id="bad", scale=5, direction=-1, unit="lives")
-    _approve(client, person_id="jobs-only", scale=5, category="jobs", unit="jobs")
+def test_overall_average_tab_position(client):
+    from app import main as m
+    # Lives: a 10, b 5, c 1 -> a 100, b 50, c 0. Jobs: b 9, a 3 -> b 100, a 0. Culture grammys: c 2 -> c 100.
+    for pid, kw in [("a", dict(scale=10, unit="lives")), ("b", dict(scale=5, unit="lives")), ("c", dict(scale=1, unit="lives")),
+                    ("b", dict(scale=9, category="jobs", unit="jobs")), ("a", dict(scale=3, category="jobs", unit="jobs")),
+                    ("c", dict(scale=2, category="culture", unit="grammys")), ("solo", dict(scale=7, category="jobs", unit="jobs"))]:
+        _approve(client, person_id=pid, **kw)
     r = client.get("/api/ranking?tab=overall").json()
-    assert [p["person_id"] for p in r] == ["pure-b", "pure-a", "mixed", "bad", "jobs-only"]
-    assert r[2]["positive_pct"] == pytest.approx(90) and r[2]["negative_pct"] == pytest.approx(10)
-    assert r[0]["counted_entries"] == 2 and all("net" not in p for p in r)
+    by = {p["person_id"]: p for p in r}
+    # Jobs: b 9, solo 7, a 3 -> b 100, solo 50, a 0. So b 75, a 50, c 50 (a/c tie: same tabs and entries -> name)
+    assert by["b"]["score"] == 75 and by["a"]["score"] == 50 and by["c"]["score"] == 50
+    assert [p["person_id"] for p in r if p["ranked"]] == ["b", "a", "c"]
+    assert by["solo"]["ranked"] is False and by["solo"]["score"] is None
+    assert by["c"]["positions"] == "Lives #3, Grammys #1"
+    assert all("net" not in p and "positive_pct" not in p for p in r)
     h = client.get("/?tab=overall").text
-    assert '<span class="pos">90%</span> · <span class="neg">10%</span>' in h
+    assert "Score 75" in h and "Not enough data yet" in h and "$" not in h.split('<div class="grid">')[1]
+    assert h.index('data-person="b"') < h.index('data-person="a"') < h.index('data-person="c"') < h.index('data-person="solo"')
+    title, rows, note = m.card_tab_data("overall")
+    assert rows[0] == ("B", "+", "Score 75", False) and len(rows) == 3 and "100 = 1st" in note
+
+
+def test_tab_positions_ties_and_single():
+    from app.main import _tab_positions
+    assert _tab_positions([{"person_id": "x", "net": 1}]) == {"x": (1, 1, 100.0)}
+    t = _tab_positions([{"person_id": p, "net": n} for p, n in (("a", 5), ("b", 5), ("c", 1))])
+    assert t["a"] == t["b"] == (1, 3, 100.0) and t["c"] == (3, 3, 0.0)
