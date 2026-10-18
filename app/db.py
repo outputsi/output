@@ -1,6 +1,8 @@
 """Storage layer. Uses Postgres when DATABASE_URL is set, else local SQLite."""
+import contextvars
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -112,29 +114,128 @@ def _row(r):
     return d
 
 
+# A fresh Neon connection is about half a second. Pages used to open one per query.
+_pools = {}
+_pool_lock = threading.Lock()
+_request_reads = contextvars.ContextVar("output_request_reads", default=None)
+
+
+def begin_request_cache():
+    """Share bulk reads for the rest of this request. Returns a reset token."""
+    return _request_reads.set({})
+
+
+def end_request_cache(token):
+    _request_reads.reset(token)
+
+
+def _invalidate_reads():
+    cache = _request_reads.get()
+    if cache is not None:
+        cache.clear()
+
+
+def _pg_pool(url):
+    with _pool_lock:
+        pool = _pools.get(url)
+        if pool is None:
+            from psycopg2.pool import ThreadedConnectionPool
+            pool = ThreadedConnectionPool(1, 12, url, keepalives=1, keepalives_idle=30,
+                                          keepalives_interval=10, keepalives_count=5)
+            _pools[url] = pool
+        return pool
+
+
+def _pg_checkout(pool):
+    import psycopg2
+    for _ in range(2):
+        conn = pool.getconn()
+        if not conn.closed:
+            return conn
+        pool.putconn(conn, close=True)
+    raise psycopg2.OperationalError("postgres connection is closed")
+
+
 @contextmanager
 def connect():
-    """Yields (cursor, placeholder). Commits on success, always closes."""
+    """Yields (cursor, placeholder). Commits on success. Postgres connections go back to the pool."""
     url = database_url()
     if url:
-        import psycopg2
         import psycopg2.extras
-        conn = psycopg2.connect(url)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        ph = "%s"
-    else:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        ph = "?"
+        pool = _pg_pool(url)
+        conn = _pg_checkout(pool)
+        broken = False
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            try:
+                yield cur, "%s"
+                conn.commit()
+            except Exception as exc:
+                # A server that has closed an idle socket often leaves conn.closed == 0
+                # until the next command. Don't put that connection back in the pool.
+                import psycopg2
+                broken = bool(conn.closed) or isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError))
+                if not broken:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        broken = True
+                raise
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    broken = True
+        finally:
+            pool.putconn(conn, close=broken)
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
     try:
-        yield cur, ph
+        yield cur, "?"
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def _snapshot():
+    """Load the bulk tables once per request, in one transaction. False outside a request."""
+    cache = _request_reads.get()
+    if cache is None:
+        return False
+    if cache.get("_snap"):
+        return True
+    people = entries = sources = conversions = None
+    for attempt in (1, 2):
+        try:
+            with connect() as (cur, ph):
+                cur.execute("SELECT person_id, image_url, image_credit, image_license_url, display_name, published FROM people")
+                people = [_row(r) for r in cur.fetchall()]
+                cur.execute("SELECT * FROM entries ORDER BY id")
+                entries = [_row(r) for r in cur.fetchall()]
+                cur.execute("SELECT id, entry_id, url, quote, added_by, added_at FROM entry_sources ORDER BY id")
+                sources = {}
+                for r in cur.fetchall():
+                    r = _row(r)
+                    sources.setdefault(r["entry_id"], []).append(r)
+                cur.execute("SELECT * FROM conversions ORDER BY category, unit")
+                conversions = [_row(r) for r in cur.fetchall()]
+            break
+        except Exception as exc:
+            # Reads only. One retry covers a pooled connection Neon already closed.
+            import psycopg2
+            if attempt == 2 or not isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+                raise
+    cache["people"] = people
+    cache["all_entries"] = entries
+    cache["entry_sources"] = sources
+    cache["conversions"] = conversions
+    cache["_snap"] = True
+    return True
 
 
 def _q(sql, ph):
@@ -236,6 +337,7 @@ def add_pageviews(counts):
                  "ON CONFLICT (day, path, referrer, country) DO UPDATE SET views = pageviews.views + excluded.views", ph)
         for (day, path, ref, country), n in counts.items():
             cur.execute(sql, (day, path, ref, country, n))
+        _invalidate_reads()
 
 
 def pageview_stats(days=30):
@@ -265,6 +367,7 @@ def add_feedback(message, email, page):
     with connect() as (cur, ph):
         cur.execute(_q("INSERT INTO feedback (created_at, message, email, page) VALUES (?,?,?,?)", ph),
                     (now(), message, email, page))
+        _invalidate_reads()
 
 
 def list_feedback(limit=200):
@@ -295,7 +398,9 @@ def insert_entry(person_id, action, source, scale, direction,
             cur.execute(sql, params)
             new_id = cur.lastrowid
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (new_id,))
-        return _row(cur.fetchone())
+        row = _row(cur.fetchone())
+        _invalidate_reads()
+        return row
 
 
 def get_entry(entry_id):
@@ -330,7 +435,9 @@ def _review(entry_id, reviewer_id, status, from_statuses=("pending",)):
             (status, now(), reviewer_id, entry_id, *from_statuses),
         )
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
-        return _row(cur.fetchone())
+        row = _row(cur.fetchone())
+        _invalidate_reads()
+        return row
 
 
 def queue():
@@ -340,8 +447,19 @@ def queue():
         return [_row(r) for r in cur.fetchall()]
 
 
+def _people_rows():
+    _ensure()
+    if _snapshot():
+        return _request_reads.get()["people"]
+    with connect() as (cur, ph):
+        cur.execute("SELECT person_id, image_url, image_credit, image_license_url, display_name, published FROM people")
+        return [_row(r) for r in cur.fetchall()]
+
+
 def person_entries(person_id):
     _ensure()
+    if _snapshot():
+        return [dict(r) for r in _request_reads.get()["all_entries"] if r["person_id"] == person_id]
     with connect() as (cur, ph):
         cur.execute(_q("SELECT * FROM entries WHERE person_id=? ORDER BY id", ph), (person_id,))
         return [_row(r) for r in cur.fetchall()]
@@ -349,23 +467,21 @@ def person_entries(person_id):
 
 def all_entries():
     _ensure()
-    with connect() as (cur, ph):
-        cur.execute("SELECT * FROM entries ORDER BY id")
-        return [_row(r) for r in cur.fetchall()]
+    if _snapshot():
+        rows = _request_reads.get()["all_entries"]
+    else:
+        with connect() as (cur, ph):
+            cur.execute("SELECT * FROM entries ORDER BY id")
+            rows = [_row(r) for r in cur.fetchall()]
+    return [dict(r) for r in rows]
 
 
 def people_images():
-    _ensure()
-    with connect() as (cur, ph):
-        cur.execute("SELECT person_id, image_url FROM people")
-        return {r["person_id"]: r["image_url"] for r in cur.fetchall()}
+    return {r["person_id"]: r["image_url"] for r in _people_rows()}
 
 
 def display_names():
-    _ensure()
-    with connect() as (cur, ph):
-        cur.execute("SELECT person_id, display_name FROM people WHERE display_name IS NOT NULL")
-        return {r["person_id"]: r["display_name"] for r in cur.fetchall()}
+    return {r["person_id"]: r["display_name"] for r in _people_rows() if r.get("display_name") is not None}
 
 
 def set_display_name(person_id, display_name):
@@ -374,14 +490,12 @@ def set_display_name(person_id, display_name):
         cur.execute(_q("INSERT INTO people (person_id, display_name) VALUES (?, ?) "
                        "ON CONFLICT (person_id) DO UPDATE SET display_name = excluded.display_name", ph),
                     (person_id, display_name))
+        _invalidate_reads()
         return {"person_id": person_id, "display_name": display_name}
 
 
 def published_ids():
-    _ensure()
-    with connect() as (cur, ph):
-        cur.execute("SELECT person_id FROM people WHERE published=1")
-        return {r["person_id"] for r in cur.fetchall()}
+    return {r["person_id"] for r in _people_rows() if r.get("published") == 1}
 
 
 def set_published(person_id, published):
@@ -390,16 +504,16 @@ def set_published(person_id, published):
         cur.execute(_q("INSERT INTO people (person_id, published) VALUES (?, ?) "
                        "ON CONFLICT (person_id) DO UPDATE SET published = excluded.published", ph),
                     (person_id, int(bool(published))))
+        _invalidate_reads()
         return {"person_id": person_id, "published": bool(published)}
 
 
 def get_person(person_id):
-    _ensure()
-    with connect() as (cur, ph):
-        cur.execute(_q("SELECT person_id, image_url, image_credit, image_license_url FROM people WHERE person_id=?", ph),
-                    (person_id,))
-        r = cur.fetchone()
-        return _row(r) if r else None
+    for r in _people_rows():
+        if r["person_id"] == person_id:
+            return {"person_id": r["person_id"], "image_url": r["image_url"],
+                    "image_credit": r["image_credit"], "image_license_url": r["image_license_url"]}
+    return None
 
 
 def set_person_image(person_id, image_url, image_credit=None, image_license_url=None):
@@ -413,7 +527,9 @@ def set_person_image(person_id, image_url, image_credit=None, image_license_url=
         )
         cur.execute(_q("SELECT person_id, image_url, image_credit, image_license_url FROM people WHERE person_id=?", ph),
                     (person_id,))
-        return _row(cur.fetchone())
+        row = _row(cur.fetchone())
+        _invalidate_reads()
+        return row
 
 
 def update_credit(entry_id, credit_share, credit_basis, credit_note, is_estimate, reviewer_id):
@@ -425,7 +541,9 @@ def update_credit(entry_id, credit_share, credit_basis, credit_note, is_estimate
             (credit_share, credit_basis, credit_note, int(bool(is_estimate)), reviewer_id, entry_id),
         )
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
-        return _row(cur.fetchone())
+        row = _row(cur.fetchone())
+        _invalidate_reads()
+        return row
 
 
 def add_entry_source(entry_id, url, quote, added_by, make_primary=False):
@@ -437,6 +555,7 @@ def add_entry_source(entry_id, url, quote, added_by, make_primary=False):
         else:
             cur.execute(_q("INSERT INTO entry_sources (entry_id, url, quote, added_by, added_at) VALUES (?,?,?,?,?)", ph),
                         (entry_id, url, quote, added_by, now()))
+        _invalidate_reads()
     return get_entry(entry_id)
 
 
@@ -445,7 +564,9 @@ def set_source_quote(entry_id, source_id, quote):
     _ensure()
     with connect() as (cur, ph):
         cur.execute(_q("UPDATE entry_sources SET quote=? WHERE id=? AND entry_id=?", ph), (quote, source_id, entry_id))
-        return cur.rowcount > 0
+        ok = cur.rowcount > 0
+        _invalidate_reads()
+        return ok
 
 
 def remove_source(entry_id, source_id):
@@ -453,27 +574,36 @@ def remove_source(entry_id, source_id):
     _ensure()
     with connect() as (cur, ph):
         cur.execute(_q("DELETE FROM entry_sources WHERE id=? AND entry_id=?", ph), (source_id, entry_id))
-        return cur.rowcount > 0
+        ok = cur.rowcount > 0
+        _invalidate_reads()
+        return ok
 
 
 def entry_sources(entry_ids=None):
     """Map entry_id -> list of extra sources."""
     _ensure()
-    with connect() as (cur, ph):
-        cur.execute("SELECT id, entry_id, url, quote, added_by, added_at FROM entry_sources ORDER BY id")
-        out = {}
-        for r in cur.fetchall():
-            r = _row(r)
-            if entry_ids is None or r["entry_id"] in entry_ids:
-                out.setdefault(r["entry_id"], []).append(r)
-        return out
+    if _snapshot():
+        full = _request_reads.get()["entry_sources"]
+    else:
+        with connect() as (cur, ph):
+            cur.execute("SELECT id, entry_id, url, quote, added_by, added_at FROM entry_sources ORDER BY id")
+            full = {}
+            for r in cur.fetchall():
+                r = _row(r)
+                full.setdefault(r["entry_id"], []).append(r)
+    return {eid: [dict(s) for s in srcs] for eid, srcs in full.items()
+            if entry_ids is None or eid in entry_ids}
 
 
 def conversions():
     _ensure()
-    with connect() as (cur, ph):
-        cur.execute("SELECT * FROM conversions ORDER BY category, unit")
-        return [_row(r) for r in cur.fetchall()]
+    if _snapshot():
+        rows = _request_reads.get()["conversions"]
+    else:
+        with connect() as (cur, ph):
+            cur.execute("SELECT * FROM conversions ORDER BY category, unit")
+            rows = [_row(r) for r in cur.fetchall()]
+    return [dict(r) for r in rows]
 
 
 def set_category(entry_id, category, unit, reviewer_id):
@@ -482,4 +612,6 @@ def set_category(entry_id, category, unit, reviewer_id):
         cur.execute(_q("UPDATE entries SET category=?, unit=?, reviewer_id=? WHERE id=?", ph),
                     (category, unit, reviewer_id, entry_id))
         cur.execute(_q("SELECT * FROM entries WHERE id=?", ph), (entry_id,))
-        return _row(cur.fetchone())
+        row = _row(cur.fetchone())
+        _invalidate_reads()
+        return row

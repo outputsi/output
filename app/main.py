@@ -168,6 +168,14 @@ def _cacheable(request):
 
 @app.middleware("http")
 async def cache_and_headers(request: Request, call_next):
+    token = db.begin_request_cache()
+    try:
+        return await _cache_and_headers(request, call_next)
+    finally:
+        db.end_request_cache(token)
+
+
+async def _cache_and_headers(request: Request, call_next):
     if request.method == "POST" and request.url.path in RATE_LIMITED and not (
             os.environ.get("ADMIN_KEY") and _admin_ok(request)) and not rate_ok(_client_ip(request)):
         resp = JSONResponse({"detail": "too many submissions, try again later"}, status_code=429,
