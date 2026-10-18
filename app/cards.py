@@ -132,3 +132,25 @@ def tab_card(title, rows, size="portrait", note="Sourced, counted entries only")
         y += step
     _footer(dr, W, H, note)
     return _png(im)
+
+
+def favicon_ico():
+    """Simple 'O' mark (white ring on dark rounded square) as a multi-size .ico."""
+    s = 64
+    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, s - 1, s - 1), radius=14, fill=(34, 34, 34, 255))
+    d.ellipse((15, 15, 49, 49), outline=(255, 255, 255, 255), width=8)
+    out = io.BytesIO()
+    im.save(out, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+    return out.getvalue()
+
+
+def load_photo(path):
+    """Mirrored local photo (app/static/people); cached like remote ones."""
+    if path not in _photo_cache:
+        try:
+            _photo_cache[path] = Image.open(path).convert("RGB")
+        except Exception:
+            return None
+    return _photo_cache[path]

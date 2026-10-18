@@ -3,12 +3,16 @@ import io
 import json
 import os
 import secrets
-from urllib.parse import quote
+import threading
+import time
+from urllib.parse import quote, urlsplit
 from html import escape
 from typing import Literal
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel, Field, ValidationError
 
 from . import cards, db
@@ -32,7 +36,9 @@ def _check_unit(category, unit):
 def rates():
     return {(c["category"], c["unit"]): float(c["usd_per_unit"]) for c in db.conversions()}
 
-app = FastAPI(title="Output")
+app = FastAPI(title="Output", docs_url=None, redoc_url=None, openapi_url=None)
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Writes (except submitting pending entries) and ?preview=1 need the admin key when ADMIN_KEY is set.
 OPEN_POSTS = {"/api/entries", "/submit", "/import"}
@@ -50,6 +56,116 @@ async def admin_guard(request: Request, call_next):
     if want and needs and not secrets.compare_digest(_key(request), want):
         return JSONResponse({"detail": "admin key required"}, status_code=401)
     return await call_next(request)
+
+
+def _admin_ok(request):
+    want = os.environ.get("ADMIN_KEY")
+    return not want or secrets.compare_digest(_key(request), want)
+
+
+# ---------- rate limit, security headers, page cache ----------
+RATE_LIMITED = {"/submit", "/import"}
+RATE_MAX, RATE_WINDOW = 10, 3600
+_rate = {}
+_rate_lock = threading.Lock()
+
+
+def _client_ip(request):
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+
+
+def rate_ok(ip, now=None):
+    """Sliding window: at most RATE_MAX posts per RATE_WINDOW seconds per IP."""
+    now = time.time() if now is None else now
+    with _rate_lock:
+        hits = [t for t in _rate.get(ip, []) if now - t < RATE_WINDOW]
+        ok = len(hits) < RATE_MAX
+        if ok:
+            hits.append(now)
+        _rate[ip] = hits
+        return ok
+
+
+SECURITY_HEADERS = {"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                    "X-Content-Type-Options": "nosniff",
+                    "Referrer-Policy": "strict-origin-when-cross-origin"}
+
+# Cached public GET pages; any successful write (approve, reject, unproven, edit, publish, rename, image) clears it.
+CACHE_TTL = 600  # safety net for writes made directly in the database
+CACHE_PREFIXES = ("/people/", "/cards/", "/api/ranking", "/api/people/")
+CACHE_EXACT = {"/", "/sitemap.xml"}
+_cache = {}
+_cache_lock = threading.Lock()
+
+
+def clear_cache():
+    with _cache_lock:
+        _cache.clear()
+
+
+def _cacheable(request):
+    path = request.url.path
+    if request.method != "GET" or not (path in CACHE_EXACT or path.startswith(CACHE_PREFIXES)):
+        return False
+    q = request.query_params
+    return not (q.get("preview") or q.get("admin_key") or request.headers.get("x-admin-key"))
+
+
+@app.middleware("http")
+async def cache_and_headers(request: Request, call_next):
+    if request.method == "POST" and request.url.path in RATE_LIMITED and not (
+            os.environ.get("ADMIN_KEY") and _admin_ok(request)) and not rate_ok(_client_ip(request)):
+        resp = JSONResponse({"detail": "too many submissions, try again later"}, status_code=429,
+                            headers={"Retry-After": str(RATE_WINDOW)})
+    elif _cacheable(request):
+        key = (db.database_url() or db.DB_PATH, request.headers.get("x-forwarded-proto", ""), str(request.url))
+        hit = _cache.get(key)
+        if hit and time.time() - hit[0] < CACHE_TTL:
+            resp = Response(hit[1], status_code=hit[2], headers=hit[3])
+        else:
+            resp = await call_next(request)
+            body = b"".join([c async for c in resp.body_iterator])
+            headers = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
+            if resp.status_code == 200:
+                with _cache_lock:
+                    if len(_cache) > 2000:
+                        _cache.clear()
+                    _cache[key] = (time.time(), body, 200, headers)
+            resp = Response(body, status_code=resp.status_code, headers=headers)
+    else:
+        resp = await call_next(request)
+        if request.method != "GET" and resp.status_code < 400:
+            clear_cache()
+    for k, v in SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
+    return resp
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_json(request: Request):
+    if not _admin_ok(request):
+        raise HTTPException(404, "Not Found")
+    return JSONResponse(app.openapi())
+
+
+def _docs_url(request):
+    k = _key(request)
+    return "/openapi.json" + (f"?admin_key={quote(k)}" if k else "")
+
+
+@app.get("/docs", include_in_schema=False)
+def docs(request: Request):
+    if not _admin_ok(request):
+        raise HTTPException(404, "Not Found")
+    return get_swagger_ui_html(openapi_url=_docs_url(request), title="Output API")
+
+
+@app.get("/redoc", include_in_schema=False)
+def redoc(request: Request):
+    if not _admin_ok(request):
+        raise HTTPException(404, "Not Found")
+    return get_redoc_html(openapi_url=_docs_url(request), title="Output API")
 
 
 @app.on_event("startup")
@@ -287,18 +403,34 @@ def adsense_head():
             'crossorigin="anonymous"></script>')
 
 
-SITE_FOOTER = ('<footer class="site-footer" style="margin:3em 0 1em;padding-top:1em;border-top:1px solid #ddd;'
-               'font-size:.85em;color:#666;text-align:center"><a href="/about">About</a> · '
+SITE_FOOTER = ('<footer class="site-footer"><a href="/">Rankings</a> · <a href="/about">About</a> · '
                '<a href="/privacy">Privacy</a></footer>')
+SITE_NAME = "Output"
+DEFAULT_DESC = ("Famous people ranked by the total measurable impact of their existence on Earth, good and bad. "
+                "Every counted claim needs 2 independent, trusted sources.")
+FAVICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" '
+               'fill="#222"/><circle cx="32" cy="32" r="17" fill="none" stroke="#fff" stroke-width="8"/></svg>')
 
 
-def page(title, body, head=""):
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title>{adsense_head()}{head}
-<style>body{{font-family:sans-serif;max-width:900px;margin:2em auto}}table{{border-collapse:collapse;width:100%}}
-td,th{{border:1px solid #ccc;padding:4px;text-align:left}}.n{{font-size:1.4em;margin-right:2em}}</style></head>
-<body><nav><a href="/">Home</a> | <a href="/submit">Submit</a> | <a href="/queue">Queue</a> |
-<form style="display:inline" action="/person"><input name="person_id" placeholder="person_id"><button>View person</button></form></nav>
-<h1>{escape(title)}</h1>{body}{SITE_FOOTER}</body></html>""")
+def head_common(title, desc, canonical):
+    """Viewport, title, description, canonical, favicon and AdSense: shared by every HTML page."""
+    can = f'<link rel="canonical" href="{escape(canonical)}">' if canonical else ""
+    return (f'<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{escape(title)}</title><meta name="description" content="{escape(desc)}">{can}'
+            '<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="icon" href="/favicon.ico" sizes="32x32">'
+            f'{adsense_head()}')
+
+
+def shell(title, desc, canonical, body, head="", extra_css=""):
+    return HTMLResponse(f"""<!doctype html><html lang="en"><head>{head_common(title, desc, canonical)}{head}
+<style>{HOME_CSS}{PAGE_CSS}{extra_css}</style></head>
+<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/">Rankings</a><a href="/about">About</a></nav></header>
+<main>{body}</main>{SITE_FOOTER}</body></html>""")
+
+
+def page(title, body, head="", desc=DEFAULT_DESC, canonical=None, h1=None):
+    return shell(f"{title} \u00b7 {SITE_NAME}", desc, canonical,
+                 f"<article class='doc'><h1>{escape(h1 or title)}</h1>{body}</article>", head)
 
 
 def sources_cell(e):
@@ -314,6 +446,60 @@ def link(src):
     if src.startswith(("http://", "https://")):
         return f'<a href="{s}" target="_blank" rel="noopener">{s}</a>'
     return s
+
+
+def short_link(src):
+    """Source link labelled by its site, so long URLs don't break phone layouts."""
+    if not src.startswith(("http://", "https://")):
+        return escape(src)
+    host = urlsplit(src).netloc.removeprefix("www.") or src
+    return f'<a href="{escape(src)}" target="_blank" rel="noopener" title="{escape(src)}">{escape(host)}</a>'
+
+
+def public_sources(e):
+    out = short_link(e["source"])
+    for x in e.get("extra_sources") or []:
+        q = f" <q>{escape(x['quote'])}</q>" if x.get("quote") else ""
+        out += f"<br><span class='extra-source'>+ {short_link(x['url'])}{q}</span>"
+    return out
+
+
+_BIG_NUM = ((1e15, " quadrillion"), (1e12, " trillion"), (1e9, " billion"), (1e6, " million"))
+
+
+def num(v, sign=False):
+    """Readable number: 14 · 9,237.5 · 120 million · 1.25 billion (never 1.2e+08)."""
+    sg = ("+" if v > 0 else "") if sign else ""
+    sg = "-" if v < 0 else sg
+    a = abs(v)
+    for div, suf in _BIG_NUM:
+        if a >= div:
+            x = a / div
+            return f"{sg}{x:,.0f}{suf}" if x >= 100 else f"{sg}{x:.3g}{suf}"
+    if a == int(a):
+        return f"{sg}{a:,.0f}"
+    return f"{sg}{a:,.2f}".rstrip("0").rstrip(".")
+
+
+PHOTO_DIR = os.path.join(STATIC_DIR, "people")
+try:
+    with open(os.path.join(PHOTO_DIR, "manifest.json")) as _f:
+        PHOTO_MANIFEST = json.load(_f)
+except (OSError, ValueError):
+    PHOTO_MANIFEST = {}
+
+
+def local_photo_path(person_id, image_url):
+    """Our mirrored copy of a photo, only while the DB still points at the same source image."""
+    if image_url and PHOTO_MANIFEST.get(person_id) == image_url:
+        path = os.path.join(PHOTO_DIR, f"{person_id}.jpg")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def photo_src(person_id, image_url):
+    return f"/static/people/{quote(person_id)}.jpg" if local_photo_path(person_id, image_url) else image_url
 
 
 class ImageIn(BaseModel):
@@ -470,6 +656,30 @@ def _culture_unit(tab, unit):
     return unit
 
 
+TAB_DESC = {"lives": "lives saved and lost", "people": "people helped and harmed", "jobs": "jobs created and cut",
+            "economy": "economic value created and destroyed, in US dollars", "climate": "greenhouse emissions (tCO2e)",
+            "nature": "animals and hectares of nature protected and harmed", "culture": "certified sales, Grammys, Oscars and records",
+            "overall": "total impact in US dollars, using official conversion rates"}
+
+
+def tab_path(tab, unit=None):
+    if tab == DEFAULT_TAB and not unit:
+        return "/"
+    return f"/?tab={tab}" + (f"&unit={unit}" if unit else "")
+
+
+def tab_meta(tab, unit=None):
+    """(h1, <title>, meta description) for a ranking tab."""
+    label = next(t[1] for t in TABS if t[0] == tab).replace(" $", "")
+    if unit:
+        label += f" \u00b7 {CULTURE_UNITS[unit][1]}"
+    h1 = f"{label} ranking: famous people by {TAB_DESC[tab]}" if not unit else f"{label} ranking"
+    title = f"{label} ranking \u00b7 Output" if tab != DEFAULT_TAB or unit else "Output \u00b7 Famous people ranked by their impact on Earth"
+    desc = (f"Famous people ranked by {TAB_DESC[tab] if not unit else CULTURE_UNITS[unit][1]}. "
+            "Only claims backed by 2 independent, trusted sources count; estimates are labeled est.")
+    return h1, title, desc
+
+
 def tab_ranking(tab, include_estimates=True, culture_unit=None):
     """People with counted entries in the tab's category, sorted by net in its own unit
     (economy: converted to USD with official rates). Returns [{person_id, name, net, lines, estimated, image_url}]."""
@@ -532,7 +742,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     uq = f"&unit={unit}" if unit else ""
     base = _base(request)
     title = next(t[1] for t in TABS if t[0] == tab) + (f" \u00b7 {CULTURE_UNITS[unit][1]}" if unit else "")
-    og = og_tags(f"Output \u00b7 Top 5 {title}", "Sourced, counted positive and negative entries.",
+    og = og_tags(f"Output \u00b7 Top 5 {title}", tab_meta(tab, unit)[2],
                  f"{base}/?tab={tab}{uq}", f"/cards/tab/{tab}.png" + (f"?unit={unit}" if unit else ""), base)
     cards = []
     q = "" if include_estimates else "?include_estimates=0"
@@ -550,7 +760,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     if tab != "overall":
         for p in (ranked if tab == "culture" else tab_ranking(tab, include_estimates)):
             pid = escape(p["person_id"])
-            av = (f'<img class="avatar" src="{escape(p["image_url"])}" alt="{escape(p["name"])}">' if p["image_url"]
+            av = (f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy">' if p["image_url"]
                   else f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>')
             cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
                          f'<div class="name">{escape(p["name"])}</div><div class="score">{escape(p["label"])}'
@@ -558,7 +768,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     for p in (ranking(include_estimates) if tab == "overall" else []):
         pid = escape(p["person_id"])
         if p["image_url"]:
-            av = f'<img class="avatar" src="{escape(p["image_url"])}" alt="{escape(p["name"])}">'
+            av = f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy">'
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
@@ -566,14 +776,10 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
                      f'{" <span class=badge>estimate</span>" if p["estimated"] else ""}</div>'
                      f'<div class="net">{share_label(p)}</div>{other_html(p["other"])}</a>')
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Output</title>{adsense_head()}{og}<style>{HOME_CSS}</style></head>
-<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/submit">Submit</a><a href="/queue">Queue</a></nav></header>
-<main><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}
-<details><summary>Set a person's image</summary>
-<form method="post" action="/people-image"><input name="person_id" placeholder="person_id" required>
-<input name="image_url" placeholder="https://... (blank to clear)" size="40"><button>Save</button></form></details>
-</main>{SITE_FOOTER}</body></html>""")
+    h1, ptitle, desc = tab_meta(tab, unit)
+    canonical = base + tab_path(tab, unit)
+    return shell(ptitle, desc, canonical,
+                 f'<h1 class="tab-h1">{escape(h1)}</h1><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}', og)
 
 
 @app.get("/submit", response_class=HTMLResponse)
@@ -717,7 +923,7 @@ def og_tags(title, desc, page_url, card_path, base):
             f'<meta name="twitter:image" content="{i}">')
 
 
-def person_card_lines(person_id):
+def person_card_lines(person_id, fmt=lambda v: f"{v:,.0f}"):
     """Counted totals per category in their own units; economy (currency-years) converted to USD with official rates, others in their own units."""
     v = person_view(person_id, True)
     r = rates()
@@ -732,9 +938,9 @@ def person_card_lines(person_id):
             continue
         label = c["unit"] if c["category"] in (c["unit"], "people", "culture") else f"{c['category']} {c['unit']}"
         if c["positive_total"]:
-            lines.append(("+", f"+{c['positive_total']:,.0f} {label}", key in est))
+            lines.append(("+", f"+{fmt(c['positive_total'])} {label}", key in est))
         if c["negative_total"]:
-            lines.append(("-", f"-{c['negative_total']:,.0f} {label}", key in est))
+            lines.append(("-", f"-{fmt(c['negative_total'])} {label}", key in est))
     if econ_pos:
         lines.insert(0, ("+", f"{usd(econ_pos)} economy", econ_est))
     if econ_neg:
@@ -757,7 +963,9 @@ def card_person(person_id: str, size: str = "portrait", preview: bool = False):
     pr = db.get_person(person_id)
     photo = credit = None
     if pr and pr["image_url"] and pr["image_credit"]:  # photos only with a credit line
-        photo, credit = cards.fetch_photo(pr["image_url"]), pr["image_credit"]
+        local = local_photo_path(person_id, pr["image_url"])
+        photo = cards.load_photo(local) if local else cards.fetch_photo(pr["image_url"])
+        credit = pr["image_credit"]
     png = cards.person_card(pretty(person_id), initials(person_id), person_card_lines(person_id), _size(size), photo, credit)
     return Response(png, media_type="image/png", headers=PNG_HEADERS)
 
@@ -815,62 +1023,162 @@ def card_tab(tab: str, size: str = "portrait", unit: str | None = None):
     return Response(png, media_type="image/png", headers=PNG_HEADERS)
 
 
+def person_description(name, lines):
+    """Short factual sentence from counted category totals."""
+    if not lines:
+        return f"{name} on Output: no counted entries yet. Unproven claims are listed separately and don't affect the score."
+    parts = ", ".join(t + (" (est.)" if est else "") for _, t, est in lines[:6])
+    return f"{name} on Output, counted impact backed by 2 trusted sources: {parts}."
+
+
+def _entry_rows(es, cols):
+    out = ""
+    for e in es:
+        tds = [f"<td class='act'>{escape(e['action'])}</td>", f"<td class='src'>{public_sources(e)}</td>",
+               f"<td class='r'>{num(e['scale'])}</td>"]
+        if "credit" in cols:
+            tds.append(f"<td>{_credit_cell(e)}</td><td class='r'>{num(e['effective_scale'])}</td>")
+        if "status" in cols:
+            tds.append(f"<td>{escape(e['status'])}</td>")
+        out += f"<tr class='{'pos' if e['direction'] > 0 else 'neg'}-row'>{''.join(tds)}</tr>"
+    return out
+
+
+def _entries_table(es, cols, empty):
+    head = "<th>Claim</th><th>Sources</th><th class='r'>Scale</th>"
+    if "credit" in cols:
+        head += "<th>Credit</th><th class='r'>Counted</th>"
+    if "status" in cols:
+        head += "<th>Status</th>"
+    n = head.count("<th")
+    body = _entry_rows(es, cols) or f"<tr><td colspan={n} class='na'>{empty}</td></tr>"
+    return f"<div class='tw'><table class='entries'><tr>{head}</tr>{body}</table></div>"
+
+
+def _person_totals(v):
+    rows = "".join(
+        f"<tr><td>{escape(c['category'])}</td><td>{escape(c['unit'])}</td>"
+        f"<td class='r pos'>{num(c['positive_total'], True) if c['positive_total'] else '0'}</td>"
+        f"<td class='r neg'>{num(-c['negative_total']) if c['negative_total'] else '0'}</td>"
+        f"<td class='r'>{num(c['net'], True)}</td></tr>"
+        for c in v["categories"]) or "<tr><td colspan=5 class='na'>Nothing counted yet.</td></tr>"
+    ov = v["overall"]
+    overall = ""
+    if ov["overall"] or ov["positive_pct"] is not None:
+        overall = (f"<p class='overall'>Overall in US dollars (official conversion rates only): <b>{usd(ov['overall'])}</b>"
+                   + (" <span class='badge'>est.</span>" if ov["estimated"] else "")
+                   + (f" · <span class='pos'>{fmt_pct(ov['positive_pct'])}</span> positive / "
+                      f"<span class='neg'>{fmt_pct(ov['negative_pct'])}</span> negative" if ov["positive_pct"] is not None else "")
+                   + (f"<br><small>Not converted (own units): {escape(', '.join(ov['not_convertible']))}</small>"
+                      if ov["not_convertible"] else "") + "</p>")
+    return ("<h2>Counted totals by category</h2><p class='muted'>Each category is totalled in its own unit; units are never added together.</p>"
+            "<div class='tw'><table class='cats'><tr><th>Category</th><th>Unit</th><th class='r'>Positive</th>"
+            f"<th class='r'>Negative</th><th class='r'>Net</th></tr>{rows}</table></div>{overall}")
+
+
+PAGE_CSS = """
+main{padding:24px 16px}
+.doc{max-width:860px;margin:0 auto;line-height:1.55}
+h1{font-size:1.6em;margin:.2em 0 .4em;line-height:1.25}.tab-h1{font-size:1.25em;font-weight:600;color:#333}
+h2{font-size:1.2em;margin-top:1.8em}h3{font-size:1.05em}
+.muted{color:#666;font-size:.9em}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
+table{border-collapse:collapse;width:100%;background:#fff;font-size:.92em}
+td,th{border-bottom:1px solid #eee;padding:8px 6px;text-align:left;vertical-align:top}
+th{font-weight:600;color:#555;background:#f4f4f5}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.act{min-width:180px}td.src{min-width:120px;word-break:break-word}td.src q{color:#666;font-size:.9em}
+.pos-row td:first-child{border-left:4px solid #1a8f4c}.neg-row td:first-child{border-left:4px solid #c93a3a}
+.person-head{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.person-head img,.person-head .avatar{width:120px;height:120px;border-radius:50%;object-fit:cover;flex:none}
+.photo-credit{font-size:.75em;color:#666;margin:.3em 0 0}
+.side{border-radius:10px;padding:2px 14px 10px;margin:14px 0;background:#fff}
+.side.green{border-top:4px solid #1a8f4c}.side.red{border-top:4px solid #c93a3a}
+.side h3.pos,.nc-pos{color:#1a8f4c}.side h3.neg,.nc-neg{color:#c93a3a}
+.uncounted{color:#555}.overall{background:#fff;padding:10px 12px;border-radius:8px}
+.site-footer{margin:3em 0 1em;padding:1em 16px 0;border-top:1px solid #ddd;font-size:.85em;color:#666;text-align:center}
+.site-footer a{color:#555}
+@media (max-width:600px){.top{padding:12px 16px}.top nav a{margin-left:14px}main{padding:16px 12px}
+.grid{grid-template-columns:repeat(2,1fr);gap:16px 8px}.avatar{width:96px;height:96px}h1{font-size:1.35em}}
+"""
+
+
 @app.get("/people/{person_id}", response_class=HTMLResponse)
 def ui_person(person_id: str, request: Request, include_estimates: bool = True, preview: bool = False):
     _visible(person_id, preview)
     v = person_view(person_id, include_estimates)
     pid = escape(person_id)
+    name = pretty(person_id)
     toggle = (f"<a href='/people/{pid}?include_estimates=0'>Exclude estimates</a>" if include_estimates
               else f"<a href='/people/{pid}'>Include estimates</a>")
-    rows = "".join(
-        f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
-        f"<td>{_credit_cell(e)}</td><td>{e['effective_scale']:g}</td>"
-        f"<td>{e['direction']:+d}</td><td>{e['reviewed_at']}</td><td>{escape(e['reviewer_id'] or '')}</td></tr>"
-        for e in v["entries"]
-    ) or "<tr><td colspan=8>No approved entries.</td></tr>"
+    pos = [e for e in v["entries"] if e["direction"] > 0]
+    neg = [e for e in v["entries"] if e["direction"] < 0]
+    counted = ("<h2>Counted entries</h2><p class='muted'>Approved claims with 2 trusted sources; these drive the totals "
+               "(counted = scale \u00d7 credit share).</p>"
+               f"<section class='side green'><h3 class='pos'>Positive</h3>{_entries_table(pos, ('credit',), 'None.')}</section>"
+               f"<section class='side red'><h3 class='neg'>Negative</h3>{_entries_table(neg, ('credit',), 'None.')}</section>")
     est = ""
     if v["estimates"]:
-        est_rows = "".join(
-            f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
-            f"<td>{_credit_cell(e)}</td><td>{e['effective_scale']:g}</td><td>{e['direction']:+d}</td></tr>"
-            for e in v["estimates"]
-        )
-        est = ("<h2>Estimates (excluded)</h2><p>Approved but marked as estimates; not counted unless estimates are included.</p>"
-               "<table style='color:#666'><tr><th>action</th><th>source</th><th>scale</th><th>credit</th><th>effective</th><th>dir</th></tr>"
-               f"{est_rows}</table>")
-    def nc_table(sign, title, color):
-        rows_ = "".join(
-            f"<tr><td>{escape(e['action'])}</td><td>{sources_cell(e)}</td><td>{e['scale']}</td>"
-            f"<td>{e['direction']:+d}</td><td>{escape(e['status'])}</td></tr>"
-            for e in v["not_counted"] if e["direction"] == sign
-        ) or "<tr><td colspan=5>None.</td></tr>"
-        return (f"<h3 class='nc-{'pos' if sign > 0 else 'neg'}' style='color:{color}'>{title}</h3>"
-                f"<table style='color:#666;border-left:4px solid {color}'><tr><th>action</th><th>source</th><th>scale</th><th>dir</th><th>status</th></tr>"
-                f"{rows_}</table>")
-    nc = nc_table(1, "Not counted, positive", "#1a8f4c") + nc_table(-1, "Not counted, negative", "#c93a3a")
-    photo = ""
+        est = ("<h2>Estimates (excluded)</h2><p class='muted'>Approved but marked as estimates; not counted unless estimates are included.</p>"
+               + _entries_table(v["estimates"], ("credit",), "None."))
+    def nc_table(sign, title):
+        cls = "pos" if sign > 0 else "neg"
+        es = [e for e in v["not_counted"] if e["direction"] == sign]
+        return (f"<section class='side {'green' if sign > 0 else 'red'} uncounted'><h3 class='nc-{cls}'>{title}</h3>"
+                f"{_entries_table(es, ('status',), 'None.')}</section>")
+    nc = nc_table(1, "Not counted, positive") + nc_table(-1, "Not counted, negative")
     pr = db.get_person(person_id)
+    photo = f'<div class="avatar">{escape(initials(person_id))}</div>'
+    credit = ""
     if pr and pr["image_url"]:
-        photo = f'<p><img src="{escape(pr["image_url"])}" alt="{pid}" style="width:120px;height:120px;border-radius:50%;object-fit:cover"></p>'
+        photo = f'<img src="{escape(photo_src(person_id, pr["image_url"]))}" alt="{escape(name)}">'
         if pr["image_credit"] or pr["image_license_url"]:
             lic = pr["image_license_url"] or ""
             lic_html = (f' (<a href="{escape(lic)}" target="_blank" rel="noopener">license</a>)'
                         if lic.startswith(("http://", "https://")) else "")
-            photo += f'<p class="photo-credit" style="font-size:.75em;color:#666;margin-top:-.5em">Photo: {escape(pr["image_credit"] or "")}{lic_html}</p>'
+            credit = f'<p class="photo-credit">Photo: {escape(pr["image_credit"] or "")}{lic_html}</p>'
     base = _base(request)
-    head = og_tags(f"{pretty(person_id)} on Output", "Sourced, counted positive and negative entries.",
-                   f"{base}/people/{pid}", f"/cards/person/{pid}.png", base)
-    return page(f"Person: {person_id}", photo +
-                "<style>.badge{background:#fde68a;color:#78350f;border-radius:4px;padding:1px 6px;font-size:.8em}</style>"
-                f"<p>{toggle}</p>{_cat_table(v)}"
-                f"<p><span class='n'>Positive: {v['positive_total']}</span><span class='n'>Negative: {v['negative_total']}</span>"
-                f"<span class='n'>Net: {v['net']}</span><span class='n'>Positive share: <span style='color:{"#999" if v["positive_pct"] is None else "#1a8f4c"}'>{fmt_pct(v['positive_pct'])}</span></span><span class='n'>Negative share: <span style='color:{"#999" if v["negative_pct"] is None else "#c93a3a"}'>{fmt_pct(v['negative_pct'])}</span></span></p>"
-                "<h2>Counted entries</h2><p>Approved entries; these drive the totals (effective = scale × credit share).</p>"
-                "<table><tr><th>action</th><th>source</th><th>scale</th><th>credit</th><th>effective</th><th>dir</th><th>reviewed_at</th><th>reviewer</th></tr>"
-                f"{rows}</table>{est}"
-                "<hr style='margin:2em 0;border:2px solid #999'>"
-                "<h2>Not counted / unproven</h2><p>Unproven or rejected entries. They do not affect the totals.</p>"
-                f"{nc}", head)
+    desc = person_description(name, person_card_lines(person_id, num))
+    head = og_tags(f"{name} on Output", desc, f"{base}/people/{pid}", f"/cards/person/{pid}.png", base)
+    body = (f"<div class='person-head'>{photo}<div><h1>{escape(name)}</h1>{credit}<p class='toggle'>{toggle}</p></div></div>"
+            f"{_person_totals(v)}{counted}{est}"
+            "<h2>Not counted / unproven</h2><p class='muted'>Unproven or rejected claims. They are shown for transparency and do not affect the totals.</p>"
+            f"{nc}")
+    return shell(f"{name}: impact on Earth, counted \u00b7 Output", desc, f"{base}/people/{pid}",
+                 f"<article class='doc'>{body}</article>", head)
+
+
+# ---------- SEO ----------
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt(request: Request):
+    return Response(f"User-agent: *\nAllow: /\n\nSitemap: {_base(request)}/sitemap.xml\n", media_type="text/plain")
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml(request: Request):
+    base = _base(request)
+    paths = [tab_path(t[0]) for t in TABS] + [tab_path("culture", u) for u in culture_unit_keys()]
+    paths += [f"/people/{quote(pid)}" for pid in sorted(db.published_ids())] + ["/about", "/privacy"]
+    urls = "".join(f"<url><loc>{escape(base + p)}</loc></url>" for p in dict.fromkeys(paths))
+    return Response('<?xml version="1.0" encoding="UTF-8"?>'
+                    f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>',
+                    media_type="application/xml")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon_svg():
+    return Response(FAVICON_SVG, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+
+
+_favicon_ico = None
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon_ico():
+    global _favicon_ico
+    if _favicon_ico is None:
+        _favicon_ico = cards.favicon_ico()
+    return Response(_favicon_ico, media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ---------- AdSense / static pages ----------
@@ -881,7 +1189,7 @@ def ads_txt():
 
 
 @app.get("/privacy", response_class=HTMLResponse)
-def ui_privacy():
+def ui_privacy(request: Request):
     return page("Privacy policy", f"""
 <p>Output (outputrank.com) does not ask you to create an account and does not collect personal data from visitors,
 beyond the standard server logs our host keeps (such as IP address, browser type, page requested and time), which are
@@ -896,11 +1204,13 @@ You can opt out of personalized advertising in <a href="https://adssettings.goog
 <h2>Submissions</h2>
 <p>If you submit an entry, the text and sources you enter are stored and may be published after review. Do not include personal information in submissions.</p>
 <h2>Contact</h2>
-<p>Questions about this policy: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""")
+<p>Questions about this policy: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""",
+                desc="Output privacy policy: no accounts, standard server logs, Google AdSense cookies.",
+                canonical=_base(request) + "/privacy")
 
 
 @app.get("/about", response_class=HTMLResponse)
-def ui_about():
+def ui_about(request: Request):
     return page("About Output", f"""
 <p>Output ranks famous people by the total measurable impact of their existence on Earth, good and bad. Every person
 has a positive side and a negative side, counted in concrete units: lives, jobs, economy (USD) and culture.</p>
@@ -908,7 +1218,10 @@ has a positive side and a negative side, counted in concrete units: lives, jobs,
 <ul>
 <li>Every counted claim needs <b>2 independent, very trusted sources</b> agreeing on the number; a 3rd source breaks ties.</li>
 <li>Very trusted means peer-reviewed journals, government and official bodies, national archives, major museums and
-memorials, university presses and major newspapers of record. Self-reported company figures don't count on their own.</li>
+memorials, university presses and major newspapers of record.</li>
+<li>Company figures: an official SEC filing (or another legally required filing to a regulator) is enough on its own for a
+company's jobs or employee count. Self-reported impact claims (for example a company's own safety or lives-saved figures)
+don't count on their own.</li>
 <li>When sources disagree, the lowest documented number is used.</li>
 <li>Negative claims need a court or official finding.</li>
 <li>Estimates are allowed when 2 very trusted sources give an approximate figure, and are labeled <i>est.</i></li>
@@ -916,4 +1229,5 @@ memorials, university presses and major newspapers of record. Self-reported comp
 <li>Outcomes of companies and foundations a person led or funded are credited to them, split by stated shares or evenly among named people.</li>
 </ul>
 <p>Every entry is reviewed before it counts. Anyone can <a href="/submit">submit</a> a claim with sources.</p>
-<p>Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""")
+<p>Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""",
+                desc="How Output ranks famous people: sourcing rules, what counts, estimates and unproven claims.", canonical=_base(request) + "/about")

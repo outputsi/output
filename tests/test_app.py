@@ -37,8 +37,10 @@ def test_unapproved_excluded_pure():
 def client(tmp_path, monkeypatch):
     from app import db
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "t.db"))
-    from app.main import app
-    return TestClient(app)
+    from app import main
+    main._rate.clear()
+    main.clear_cache()
+    return TestClient(main.app)
 
 
 def sub(c, **kw):
@@ -91,7 +93,7 @@ def test_ui_smoke(client):
         client.post(f"/queue/{e['id']}/approve", data={"reviewer_id": "r"})
     client.post("/api/people/u/publish", json={"published": True})
     page = client.get("/people/u").text
-    assert "Net: 6.0" in page and 'href="https://s.org"' in page and "Book p.4" in page
+    assert "<td class='r'>+6</td>" in page and 'href="https://s.org"' in page and "Book p.4" in page
 
 
 def test_unproven_pure():
@@ -224,8 +226,8 @@ def test_pct_display(client):
     assert '<span class="pos">100%</span> · <span class="neg">0%</span>' in h
     assert 'data-person="nobody"' not in h and "9,237.5" not in h and "bar" not in h
     t = client.get("/people/jonas-salk").text
-    assert "Positive share: <span style='color:#1a8f4c'>100%</span>" in t
-    assert "Negative share: <span style='color:#c93a3a'>0%</span>" in t
+    assert "Positive:" not in t and "Positive share" not in t  # no mixed-unit headline
+    assert "<td class='r pos'>+9,237.5</td>" in t
 
 
 def test_negative_pct_90_10_and_none():
@@ -368,7 +370,7 @@ def test_person_page_no_credit_line(client):
     _approve(client, person_id="jonas-salk")
     client.post("/api/people/jonas-salk/image", json={"image_url": "https://img.example/js.jpg"})
     h = client.get("/people/jonas-salk").text
-    assert '<img src="https://img.example/js.jpg"' in h and "photo-credit" not in h
+    assert '<img src="https://img.example/js.jpg" alt="Jonas Salk"' in h and 'class="photo-credit"' not in h
 
 
 def test_extra_sources(client):
@@ -432,7 +434,7 @@ def test_categories_and_overall(client):
     assert set(ov["not_convertible"]) == {"jobs (jobs)", "people (people)"}
     assert sub(client, category="climate", unit="USD").status_code == 422
     h = client.get("/people/cat").text
-    assert "By category" in h and "not convertible" in h
+    assert "Counted totals by category" in h and "Not converted (own units): jobs (jobs), people (people)" in h
     assert "$28" in client.get("/?tab=overall").text
     assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
@@ -455,7 +457,7 @@ def test_estimate_label_and_currency(client):
     _approve(client, person_id="estp", scale=3, unit="lives", is_estimate=True)
     v = client.get("/api/people/estp").json()["overall"]
     assert v["estimated"] is True
-    assert "estimate</span>" in client.get("/?tab=overall").text and "driven by estimate" in client.get("/people/estp").text
+    assert "estimate</span>" in client.get("/?tab=overall").text and "<span class='badge'>est.</span>" in client.get("/people/estp").text
     _approve(client, person_id="eur", scale=1000, direction=-1, category="economy", unit="EUR-2019")
     assert client.get("/api/people/eur").json()["overall"]["overall"] == pytest.approx(-1119.4)
     assert client.get("/api/people/eur").json()["overall"]["estimated"] is False
@@ -662,3 +664,114 @@ def test_adsense_pages(client):
         r = client.get(path)
         assert r.status_code == 200 and "google-adsense-account" in r.text
     assert "policies.google.com/technologies/ads" in client.get("/privacy").text
+
+
+# ---------- audit fixes: public pages, SEO, cache, limits ----------
+def _pub(client, pid="ada-lovelace", **kw):
+    i = _approve(client, person_id=pid, **kw)
+    client.post(f"/api/people/{pid}/publish", json={"published": True})
+    return i
+
+
+def test_person_page_public_view(client):
+    _pub(client, scale=120_000_000, unit="lives")
+    _pub(client, scale=14, direction=-1, unit="lives")
+    client.post("/api/people/ada-lovelace/name", json={"display_name": "Ada Lovelace"})
+    client.post("/api/people/ada-lovelace/image", json={"image_url": "https://img.example/a.jpg", "image_credit": "X"})
+    h = client.get("/people/ada-lovelace").text
+    assert 'name="viewport"' in h and "<title>Ada Lovelace: impact on Earth" in h and "<h1>Ada Lovelace</h1>" in h
+    assert 'alt="Ada Lovelace"' in h and "e+0" not in h and "120 million" in h
+    assert "reviewer" not in h.lower() and "2020-01" not in h and "T00:" not in h
+    assert "Positive:" not in h and "Not counted, positive" in h and "Not counted, negative" in h
+    assert 'rel="canonical" href="http://testserver/people/ada-lovelace"' in h
+    assert '<meta name="description" content="Ada Lovelace on Output, counted impact backed by 2 trusted sources: +120 million lives, -14 lives."' in h
+
+
+def test_num_format():
+    from app.main import num
+    assert num(1.2e8) == "120 million" and num(1_250_000_000) == "1.25 billion" and num(9237.5) == "9,237.5"
+    assert num(14, True) == "+14" and num(-14) == "-14" and num(0) == "0"
+
+
+def test_public_nav_and_viewport(client):
+    for path in ("/", "/about", "/privacy", "/?tab=jobs", "/submit", "/queue"):
+        h = client.get(path).text
+        assert 'name="viewport"' in h, path
+    for path in ("/", "/about", "/privacy"):
+        h = client.get(path).text
+        assert 'href="/queue"' not in h and "Set a person" not in h and "/people-image" not in h
+        assert '<nav><a href="/submit"' not in h
+    assert client.get("/submit").status_code == 200 and client.get("/queue").status_code == 200
+
+
+def test_tab_meta_unique(client):
+    titles = set()
+    for t in ("lives", "people", "jobs", "economy", "climate", "nature", "culture", "overall"):
+        h = client.get(f"/?tab={t}").text
+        titles.add(h.split("<title>")[1].split("</title>")[0])
+        assert "<h1" in h and 'name="description"' in h and 'rel="canonical"' in h
+    assert len(titles) == 8
+
+
+def test_seo_files(client):
+    _pub(client, scale=3, unit="lives")
+    r = client.get("/robots.txt")
+    assert r.status_code == 200 and "Allow: /" in r.text and "Sitemap: http://testserver/sitemap.xml" in r.text
+    x = client.get("/sitemap.xml").text
+    for u in ("http://testserver/<", "/?tab=overall", "/people/ada-lovelace", "/about", "/privacy"):
+        assert u in x
+    assert client.get("/favicon.ico").status_code == 200 and client.get("/favicon.svg").status_code == 200
+
+
+def test_docs_need_admin_key(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_KEY", "k")
+    for p in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(p).status_code == 404
+        assert client.get(p + "?admin_key=k").status_code == 200
+
+
+def test_security_headers_and_rate_limit(client):
+    r = client.get("/")
+    assert r.headers["x-content-type-options"] == "nosniff" and "max-age" in r.headers["strict-transport-security"]
+    assert r.headers["referrer-policy"]
+    form = {"person_id": "u", "action": "a", "source": "s", "scale": "1", "direction": "1"}
+    codes = [client.post("/submit", data=form, follow_redirects=False).status_code for _ in range(11)]
+    assert codes[:10] == [303] * 10 and codes[10] == 429
+    assert client.post("/import", data={"json_text": "[]"}).status_code == 429
+
+
+def test_cache_cleared_on_writes(client):
+    i = _pub(client, scale=3, unit="lives")
+    assert "+3 lives" in client.get("/").text
+    j = sub(client, person_id="ada-lovelace", scale=5, unit="lives").json()["id"]
+    assert "+3 lives" in client.get("/").text
+    client.post(f"/api/entries/{j}/approve", json={"reviewer_id": "r"})
+    assert "+8 lives" in client.get("/").text
+    client.post(f"/api/entries/{i}/mark-unproven", json={"reviewer_id": "r"})
+    assert "+5 lives" in client.get("/").text
+    client.post("/api/people/ada-lovelace/name", json={"display_name": "Countess Ada"})
+    assert "Countess Ada" in client.get("/").text and "<h1>Countess Ada</h1>" in client.get("/people/ada-lovelace").text
+    client.post("/api/people/ada-lovelace/publish", json={"published": False})
+    assert client.get("/people/ada-lovelace").status_code == 404
+
+
+def test_local_photo_served(client, monkeypatch):
+    from app import main
+    monkeypatch.setattr(main, "PHOTO_MANIFEST", {"ada-lovelace": "https://img.example/a.jpg"})
+    monkeypatch.setattr(main, "local_photo_path", lambda pid, url: "x" if main.PHOTO_MANIFEST.get(pid) == url else None)
+    _pub(client, scale=3, unit="lives")
+    client.post("/api/people/ada-lovelace/image", json={"image_url": "https://img.example/a.jpg", "image_credit": "Jane"})
+    h = client.get("/people/ada-lovelace").text
+    assert 'src="/static/people/ada-lovelace.jpg"' in h and "Photo: Jane" in h
+    client.post("/api/people/ada-lovelace/image", json={"image_url": "https://img.example/new.jpg", "image_credit": "Jane"})
+    assert 'src="https://img.example/new.jpg"' in client.get("/people/ada-lovelace").text
+
+
+def test_mirrored_photos_exist():
+    from app import main
+    assert main.PHOTO_MANIFEST and all(main.local_photo_path(p, u) for p, u in main.PHOTO_MANIFEST.items())
+
+
+def test_about_company_filing_rule(client):
+    h = client.get("/about").text
+    assert "official SEC filing" in h and "Self-reported company figures don't count on their own" not in h

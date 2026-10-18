@@ -166,3 +166,9 @@ Photos: freely licensed only (CC BY, CC BY-SA, CC0, public domain, UK Open Gover
 Green = positive, red = negative; footer `outputrank.com`. A photo is drawn only when the person has an image with a credit line,
 which is printed under it. Unpublished people 404 (preview with the admin key). Person and home/tab pages carry Open Graph and
 Twitter tags pointing at the `?size=x` card; set `PUBLIC_URL` to force the absolute origin (e.g. https://outputrank.com).
+
+## Public site notes
+
+- Person photos are mirrored in `app/static/people/` (`tools/fetch_photos.py`, manifest maps person_id to source URL); the local copy is used only while the DB `image_url` matches.
+- Public GET pages, cards and `/api/ranking` are cached in memory; any successful write clears the cache (10 min TTL as a safety net).
+- `/submit` and `/import` POSTs: 10 per hour per IP. `/docs`, `/redoc`, `/openapi.json` need the admin key when `ADMIN_KEY` is set.
