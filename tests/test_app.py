@@ -473,7 +473,7 @@ def test_nonconvertible_lines_shown(client):
     h = client.get("/?tab=overall").text
     assert '<div class="positions">Lives #1, People #2, Jobs #1</div>' in h and "Score 67" in h
     assert 'data-person="zero-but-counted"' in h
-    assert "-78,000 people" in client.get("/people/mix2").text
+    assert "78,000 people harmed" in client.get("/people/mix2").text
     assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
 
 
@@ -680,12 +680,17 @@ def test_person_page_public_view(client):
     client.post("/api/people/ada-lovelace/name", json={"display_name": "Ada Lovelace"})
     client.post("/api/people/ada-lovelace/image", json={"image_url": "https://img.example/a.jpg", "image_credit": "X"})
     h = client.get("/people/ada-lovelace").text
-    assert 'name="viewport"' in h and "<title>Ada Lovelace: impact on Earth" in h and "<h1>Ada Lovelace</h1>" in h
+    assert 'name="viewport"' in h and "<title>Ada Lovelace: 120 million lives saved · Output</title>" in h
+    assert "<h1>Ada Lovelace</h1>" in h
     assert 'alt="Ada Lovelace"' in h and "e+0" not in h and "120 million" in h
     assert "reviewer" not in h.lower() and "2020-01" not in h and "T00:" not in h
     assert "Positive:" not in h and "Not counted, positive" in h and "Not counted, negative" in h
     assert 'rel="canonical" href="http://testserver/people/ada-lovelace"' in h
-    assert '<meta name="description" content="Ada Lovelace on Output, counted impact backed by 2 trusted sources: +120 million lives, -14 lives."' in h
+    assert ('<meta name="description" content="Ada Lovelace: 120 million lives saved, 14 lives lost. '
+            'Counted impact on Output, backed by 2 trusted sources."') in h
+    assert 'property="og:title" content="Ada Lovelace: 120 million lives saved · Output"' in h
+    assert 'name="twitter:title" content="Ada Lovelace: 120 million lives saved · Output"' in h
+    assert "Ada Lovelace’s counted impact is 120 million lives saved, and also 14 lives lost." in h
 
 
 def test_num_format():
@@ -722,6 +727,8 @@ def test_seo_files(client):
     for u in ("http://testserver/<", "/?tab=overall", "/people/ada-lovelace", "/about", "/privacy"):
         assert u in x
     assert client.get("/favicon.ico").status_code == 200 and client.get("/favicon.svg").status_code == 200
+    assert x.count("<lastmod>") == x.count("<loc>") and "<lastmod>" in x
+    assert "T" not in x.split("<lastmod>")[1].split("</lastmod>")[0]
 
 
 def test_docs_need_admin_key(client, monkeypatch):
@@ -909,6 +916,102 @@ def test_feedback_form(client, monkeypatch):
     codes = [client.post("/feedback", data={"message": "m"}, follow_redirects=False).status_code for _ in range(10)]
     assert 429 in codes
     assert "anonymous" in client.get("/privacy").text.lower() and "Feedback" in client.get("/privacy").text
+
+
+def test_search_copy_notes_and_canonical_host(client, monkeypatch):
+    import json as _json
+    import re
+    from app import main
+
+    people = dict(main.INFLUENCE.get("people") or {})
+    people["norman-borlaug"] = {"title": "Norman Borlaug", "wikidata": "Q171973", "languages": 40, "views": 12}
+    monkeypatch.setitem(main.INFLUENCE, "people", people)
+
+    action = ("High-yield wheat credited with averting famine (Guardian) [CONFIRMS ~1 billion]; "
+              "magnitude 1.0; counterfactual, shared credit")
+    created = sub(client, person_id="norman-borlaug", scale=1_000_000_000, unit="lives", is_estimate=True,
+                  action=action, credit_note="Rule 4: lowest documented number. Replaces entry #19.")
+    queued = client.get("/queue").text
+    assert "magnitude 1.0" in queued and "[CONFIRMS ~1 billion]" in queued and "Replaces entry" not in queued
+    client.post(f"/api/entries/{created.json()['id']}/approve", json={"reviewer_id": "r"})
+    client.post(f"/api/entries/{created.json()['id']}/sources", json={
+        "url": "https://www.govinfo.gov/content/pkg/PLAW-109publ395/html/PLAW-109publ395.htm",
+        "quote": "[CONFIRMS ~1 billion] Public Law 109-395: more than a billion people.",
+        "reviewer_id": "r"})
+    _approve(client, person_id="florence-nightingale", scale=10, unit="lives")
+    _approve(client, person_id="recordman", scale=2, direction=1, category="culture", unit="guinness-records")
+    _approve(client, person_id="spender", scale=250, direction=-1, category="economy", unit="USD")
+    _approve(client, person_id="noted", scale=4, unit="people", credit_note="Source lists 4 contributors",
+             action="Named alongside three others")
+    client.post("/api/people/norman-borlaug/image",
+                json={"image_url": "https://img.example/borlaug.jpg", "image_credit": "Photo desk"})
+
+    h = client.get("/people/norman-borlaug").text
+    head = h.split("</head>")[0]
+    assert "<title>Norman Borlaug: ~1 billion lives saved (est.) · Output</title>" in head
+    assert 'property="og:title" content="Norman Borlaug: ~1 billion lives saved (est.) · Output"' in head
+    assert 'name="twitter:title" content="Norman Borlaug: ~1 billion lives saved (est.) · Output"' in head
+    assert "guinness-records" not in head and "-$250 economy" not in head
+    assert "High-yield wheat credited with averting famine (Guardian)" in h
+    assert "https://ex.com" in h and "govinfo.gov" in h
+    assert "Public Law 109-395: more than a billion people." in h
+    for hidden in ("CONFIRMS", "magnitude", "counterfactual", "Rule 4", "Replaces entry"):
+        assert hidden not in h, hidden
+    assert "Norman Borlaug’s counted impact is ~1 billion lives saved (est.)" in h
+    assert 'href="/people/florence-nightingale"' in h and "Florence Nightingale" in h
+    assert 'href="/"' in h and "Lives ranking" in h
+    api = client.get("/api/people/norman-borlaug").json()
+    assert api["net"] == 1_000_000_000
+    assert api["entries"][0]["credit_note"].startswith("Rule 4")
+    assert "magnitude 1.0" in api["entries"][0]["action"]
+    preview = client.get("/people/norman-borlaug?preview=1").text
+    assert "Rule 4" in preview and "magnitude 1.0" in preview and "[CONFIRMS ~1 billion]" in preview
+
+    noted = client.get("/people/noted").text
+    assert "Source lists 4 contributors" in noted and "Named alongside three others" in noted
+
+    rec = client.get("/people/recordman").text.split("</head>")[0]
+    assert "2 Guinness World Records" in rec and "guinness-records" not in rec
+    econ = client.get("/people/spender").text.split("</head>")[0]
+    assert "$250 in economic losses" in econ and "-$250 economy" not in econ
+
+    blobs = re.findall(r'<script type="application/ld\+json">(.*?)</script>', h)
+    kinds = [_json.loads(b) for b in blobs]
+    person = next(b for b in kinds if b["@type"] == "Person")
+    crumbs = next(b for b in kinds if b["@type"] == "BreadcrumbList")
+    assert person["name"] == "Norman Borlaug" and person["image"] == "https://img.example/borlaug.jpg"
+    assert "https://en.wikipedia.org/wiki/Norman_Borlaug" in person["sameAs"]
+    assert "https://www.wikidata.org/wiki/Q171973" in person["sameAs"]
+    assert [c["name"] for c in crumbs["itemListElement"]] == ["Output", "Norman Borlaug"]
+    assert crumbs["itemListElement"][0]["item"] == "http://testserver/"
+
+    home = client.get("/").text
+    title = home.split("<title>")[1].split("</title>")[0]
+    assert title == "Output · Famous people ranked by their impact on Earth"
+    assert f'property="og:title" content="{title}"' in home
+    assert 'property="og:url" content="http://testserver/"' in home
+    assert 'property="og:url" content="http://testserver/?tab=' not in home
+    listing = _json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', home).group(1))
+    assert listing["@type"] == "ItemList"
+    assert [i["name"] for i in listing["itemListElement"]][:2] == ["Norman Borlaug", "Florence Nightingale"]
+    assert listing["itemListElement"][0]["position"] == 1
+    jobs = client.get("/?tab=jobs").text
+    assert "<title>Jobs ranking · Output</title>" in jobs
+    assert 'property="og:title" content="Jobs ranking · Output"' in jobs
+    assert 'property="og:url" content="http://testserver/?tab=jobs"' in jobs
+
+    gone = client.get("http://output-orrw.onrender.com/people/norman-borlaug?x=1", follow_redirects=False)
+    assert gone.status_code == 301
+    assert gone.headers["location"] == "https://outputrank.com/people/norman-borlaug?x=1"
+    www = client.get("http://www.outputrank.com/about?q=1", follow_redirects=False)
+    assert www.status_code == 301 and www.headers["location"] == "https://outputrank.com/about?q=1"
+    assert client.get("/people/norman-borlaug").status_code == 200
+
+    assert "google-site-verification" not in client.get("/about").text
+    monkeypatch.setenv("GOOGLE_SITE_VERIFICATION", "token-abc")
+    assert 'name="google-site-verification" content="token-abc"' in client.get("/about").text
+    monkeypatch.setenv("GOOGLE_SITE_VERIFICATION", "")
+    assert "google-site-verification" not in client.get("/privacy").text
 
 
 PG_BIN = "/usr/lib/postgresql/18/bin"
