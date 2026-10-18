@@ -1,4 +1,5 @@
 import pytest
+import time
 from fastapi.testclient import TestClient
 from app.scoring import score
 
@@ -908,3 +909,43 @@ def test_feedback_form(client, monkeypatch):
     codes = [client.post("/feedback", data={"message": "m"}, follow_redirects=False).status_code for _ in range(10)]
     assert 429 in codes
     assert "anonymous" in client.get("/privacy").text.lower() and "Feedback" in client.get("/privacy").text
+
+
+PG_BIN = "/usr/lib/postgresql/18/bin"
+
+
+@pytest.fixture
+def pg_url(tmp_path):
+    """Throwaway real Postgres cluster (skipped when the server binaries aren't installed)."""
+    import os, shutil, subprocess, socket
+    if not os.path.exists(f"{PG_BIN}/initdb") or os.geteuid() == 0:
+        pytest.skip("postgres server not available")
+    data, sock = tmp_path / "pg", tmp_path / "sock"
+    sock.mkdir()
+    subprocess.run([f"{PG_BIN}/initdb", "-D", str(data), "-U", "t", "--auth=trust"], check=True, capture_output=True)
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    subprocess.run([f"{PG_BIN}/pg_ctl", "-D", str(data), "-l", str(tmp_path / "pg.log"),
+                    "-o", f"-p {port} -k {sock} -c listen_addresses=127.0.0.1", "-w", "start"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    try:
+        yield f"postgresql://t@127.0.0.1:{port}/postgres"
+    finally:
+        subprocess.run([f"{PG_BIN}/pg_ctl", "-D", str(data), "-m", "immediate", "stop"], capture_output=True)
+
+
+def test_stats_and_feedback_on_real_postgres(pg_url, monkeypatch):
+    from app import db, main as m
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("ADMIN_KEY", "k")
+    m._rate.clear(); m.clear_cache(); m._views.clear()
+    db.init()
+    c = TestClient(m.app)
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    db.add_pageviews({(day, "/?tab=jobs", "t.co", "US"): 2, (day, "/people/a", "", ""): 1})
+    db.add_pageviews({(day, "/?tab=jobs", "t.co", "US"): 1})
+    st = db.pageview_stats()
+    assert dict(st["pages"]) == {"/?tab=jobs": 3} and dict(st["people"]) == {"/people/a": 1}
+    r = c.get("/admin/stats?admin_key=k")
+    assert r.status_code == 200 and "<b>4</b> page views" in r.text
+    db.add_feedback("hello", None, "/people/a")
+    assert c.get("/admin/feedback?admin_key=k").status_code == 200 and db.list_feedback()[0]["message"] == "hello"

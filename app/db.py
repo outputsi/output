@@ -246,15 +246,16 @@ def pageview_stats(days=30):
     with connect() as (cur, ph):
         for name, sql in (
                 ("by_day", "SELECT day AS k, SUM(views) AS n FROM pageviews WHERE day >= ? GROUP BY day ORDER BY day DESC"),
-                ("pages", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path NOT LIKE '/people/%' "
+                ("pages", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path NOT LIKE ? "
                           "GROUP BY path ORDER BY n DESC LIMIT 30"),
-                ("people", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path LIKE '/people/%' "
+                ("people", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path LIKE ? "
                            "GROUP BY path ORDER BY n DESC LIMIT 30"),
                 ("referrers", "SELECT referrer AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND referrer <> '' "
                               "GROUP BY referrer ORDER BY n DESC LIMIT 30"),
                 ("countries", "SELECT country AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND country <> '' "
                               "GROUP BY country ORDER BY n DESC LIMIT 30")):
-            cur.execute(_q(sql, ph), (since,))
+            # LIKE pattern passed as a parameter: a literal '%' breaks psycopg2's %s placeholders.
+            cur.execute(_q(sql, ph), (since, "/people/%") if "LIKE ?" in sql else (since,))
             out[name] = [(r["k"], int(r["n"])) for r in map(_row, cur.fetchall())]
     return out
 
