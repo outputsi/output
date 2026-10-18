@@ -176,3 +176,8 @@ Twitter tags pointing at the `?size=x` card; set `PUBLIC_URL` to force the absol
 ## Influence tab
 
 Neutral reach tab (`?tab=influence`, `/api/ranking?tab=influence`) with two sub-tabs: Languages (default; number of Wikipedia language editions with an article, from Wikidata sitelinks, as used by MIT Pantheon) and Attention (`&unit=attention`; English Wikipedia page views for the last 12 months, Wikimedia Pageviews API). Data in `app/influence.json` (Wikidata id, article title, as-of dates). Never positive/negative, excluded from Overall and its 2-tab minimum, and does not make anyone public.
+
+## Visitor stats and feedback
+
+- Anonymous first-party stats: human HTML page views are counted per day, path/tab, referrer domain and country header (no cookies, no IPs), buffered in memory and flushed to the `pageviews` table. Bots, curl/keepalive, API calls, 404s and admin-key requests are excluded. Admin page: `/admin/stats?admin_key=...`.
+- Feedback: `/feedback` (footer + person pages), message + optional email, honeypot, 10/hour/IP, stored in `feedback`. Admin page: `/admin/feedback?admin_key=...`. Both admin pages return 404 without the key.

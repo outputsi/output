@@ -864,3 +864,47 @@ def test_broken_photo_falls_back_to_initials(client):
     assert "onerror=" in client.get("/people/ada-lovelace").text
     client.post("/api/people/ada-lovelace/image", json={"image_url": ""})
     assert '<div class="avatar placeholder">AL</div>' in client.get("/").text
+
+
+HUMAN = {"user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1"}
+
+
+def test_pageview_stats(client, monkeypatch):
+    from app import main as m
+    m._views.clear()
+    _approve(client, person_id="ada-lovelace", scale=1, unit="lives")
+    monkeypatch.setenv("ADMIN_KEY", "k")
+    client.get("/?tab=jobs", headers={**HUMAN, "referer": "https://t.co/abc", "cf-ipcountry": "US"})
+    client.get("/?tab=jobs", headers=HUMAN)
+    client.get("/people/ada-lovelace", headers=HUMAN)
+    client.get("/", headers={"user-agent": "Googlebot/2.1"})              # bot
+    client.get("/", headers={"user-agent": "curl/8.0"})                   # keepalive-style
+    client.get("/api/ranking?tab=lives", headers=HUMAN)                   # not a page
+    client.get("/people/nobody", headers=HUMAN)                           # 404
+    assert client.get("/admin/stats").status_code == 404
+    h = client.get("/admin/stats?admin_key=k").text
+    assert "<b>3</b> page views" in h and "t.co" in h and ">US<" in h and "/people/ada-lovelace" in h
+    assert "/?tab=jobs" in h and "Googlebot" not in h
+    st = m.db.pageview_stats()
+    assert dict(st["pages"]) == {"/?tab=jobs": 2} and dict(st["people"]) == {"/people/ada-lovelace": 1}
+    assert "set-cookie" not in client.get("/", headers=HUMAN).headers
+
+
+def test_feedback_form(client, monkeypatch):
+    _approve(client, person_id="ada-lovelace", scale=1, unit="lives")
+    monkeypatch.setenv("ADMIN_KEY", "k")
+    assert "Suggest a person or feature" in client.get("/").text and "/feedback" in client.get("/about").text
+    assert "/feedback?page=/people/ada-lovelace" in client.get("/people/ada-lovelace").text
+    assert 'name="website"' in client.get("/feedback").text
+    r = client.post("/feedback", data={"message": "Add <Marie Curie>", "email": "a@b.co", "page": "/people/ada-lovelace"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    client.post("/feedback", data={"message": "spam", "website": "http://spam"})       # honeypot
+    assert client.post("/feedback", data={"message": ""}).status_code == 422
+    assert client.post("/feedback", data={"message": "x", "email": "nope"}).status_code == 422
+    assert client.get("/admin/feedback").status_code == 404
+    h = client.get("/admin/feedback?admin_key=k").text
+    assert "Add &lt;Marie Curie&gt;" in h and "a@b.co" in h and "spam" not in h
+    codes = [client.post("/feedback", data={"message": "m"}, follow_redirects=False).status_code for _ in range(10)]
+    assert 429 in codes
+    assert "anonymous" in client.get("/privacy").text.lower() and "Feedback" in client.get("/privacy").text

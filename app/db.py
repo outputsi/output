@@ -2,7 +2,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 DB_PATH = os.environ.get("NET_OUTPUT_DB", "net_output.db")
 
@@ -216,7 +216,61 @@ def init():
             + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
             + ", entry_id INTEGER NOT NULL, url TEXT NOT NULL, quote TEXT NULL, "
             "added_by TEXT NULL, added_at TEXT NOT NULL)")
+        # Anonymous, aggregated page views (no cookies, no IPs) and feedback.
+        cur.execute("CREATE TABLE IF NOT EXISTS pageviews (day TEXT NOT NULL, path TEXT NOT NULL, "
+                    "referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', views INTEGER NOT NULL DEFAULT 0, "
+                    "PRIMARY KEY (day, path, referrer, country))")
+        cur.execute("CREATE TABLE IF NOT EXISTS feedback ("
+                    + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
+                    + ", created_at TEXT NOT NULL, message TEXT NOT NULL, email TEXT NULL, page TEXT NULL)")
     _initialized.add(key)
+
+
+def add_pageviews(counts):
+    """counts: {(day, path, referrer, country): n}. Adds to the daily aggregates."""
+    if not counts:
+        return
+    _ensure()
+    with connect() as (cur, ph):
+        sql = _q("INSERT INTO pageviews (day, path, referrer, country, views) VALUES (?,?,?,?,?) "
+                 "ON CONFLICT (day, path, referrer, country) DO UPDATE SET views = pageviews.views + excluded.views", ph)
+        for (day, path, ref, country), n in counts.items():
+            cur.execute(sql, (day, path, ref, country, n))
+
+
+def pageview_stats(days=30):
+    """Aggregates for the admin page."""
+    _ensure()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    out = {}
+    with connect() as (cur, ph):
+        for name, sql in (
+                ("by_day", "SELECT day AS k, SUM(views) AS n FROM pageviews WHERE day >= ? GROUP BY day ORDER BY day DESC"),
+                ("pages", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path NOT LIKE '/people/%' "
+                          "GROUP BY path ORDER BY n DESC LIMIT 30"),
+                ("people", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path LIKE '/people/%' "
+                           "GROUP BY path ORDER BY n DESC LIMIT 30"),
+                ("referrers", "SELECT referrer AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND referrer <> '' "
+                              "GROUP BY referrer ORDER BY n DESC LIMIT 30"),
+                ("countries", "SELECT country AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND country <> '' "
+                              "GROUP BY country ORDER BY n DESC LIMIT 30")):
+            cur.execute(_q(sql, ph), (since,))
+            out[name] = [(r["k"], int(r["n"])) for r in map(_row, cur.fetchall())]
+    return out
+
+
+def add_feedback(message, email, page):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("INSERT INTO feedback (created_at, message, email, page) VALUES (?,?,?,?)", ph),
+                    (now(), message, email, page))
+
+
+def list_feedback(limit=200):
+    _ensure()
+    with connect() as (cur, ph):
+        cur.execute(_q("SELECT id, created_at, message, email, page FROM feedback ORDER BY id DESC LIMIT ?", ph), (limit,))
+        return [_row(r) for r in cur.fetchall()]
 
 
 def _ensure():

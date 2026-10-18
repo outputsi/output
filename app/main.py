@@ -3,6 +3,7 @@ import io
 import json
 import os
 import secrets
+import re
 import threading
 import time
 from urllib.parse import quote, urlsplit
@@ -41,7 +42,7 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Writes (except submitting pending entries) and ?preview=1 need the admin key when ADMIN_KEY is set.
-OPEN_POSTS = {"/api/entries", "/submit", "/import"}
+OPEN_POSTS = {"/api/entries", "/submit", "/import", "/feedback"}
 
 
 def _key(request):
@@ -64,7 +65,7 @@ def _admin_ok(request):
 
 
 # ---------- rate limit, security headers, page cache ----------
-RATE_LIMITED = {"/submit", "/import"}
+RATE_LIMITED = {"/submit", "/import", "/feedback"}
 RATE_MAX, RATE_WINDOW = 10, 3600
 _rate = {}
 _rate_lock = threading.Lock()
@@ -73,6 +74,59 @@ _rate_lock = threading.Lock()
 def _client_ip(request):
     fwd = request.headers.get("x-forwarded-for", "")
     return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+
+
+# ---------- anonymous page view stats (no cookies, no IPs; daily aggregates) ----------
+BOT_RE = re.compile(r"bot|crawl|spider|slurp|curl|wget|python|httpx|requests|go-http|java/|headless|lighthouse|"
+                    r"monitor|uptime|pingdom|preview|facebookexternalhit|embedly|axios|node-fetch|scrapy|feed", re.I)
+_views = {}
+_views_lock = threading.Lock()
+_views_flushed = [time.time()]
+VIEW_FLUSH_SECONDS = 30
+
+
+def _view_path(request):
+    path = request.url.path
+    if path == "/":
+        q = request.query_params
+        tab, unit = q.get("tab", ""), q.get("unit", "")
+        return "/" + (f"?tab={tab}" if tab else "") + (f"&unit={unit}" if tab and unit else "")
+    if path.startswith("/people/") or path in ("/about", "/privacy", "/feedback"):
+        return path
+    return None
+
+
+def record_view(request, status, content_type):
+    """Count a human HTML page view: path, referrer domain, country header. Bots and admin traffic excluded."""
+    if request.method != "GET" or status != 200 or not content_type.startswith("text/html"):
+        return
+    path = _view_path(request)
+    ua = request.headers.get("user-agent", "")
+    if path is None or not ua or BOT_RE.search(ua) or _key(request) or request.query_params.get("preview"):
+        return
+    ref = urlsplit(request.headers.get("referer", "")).netloc.lower().removeprefix("www.")
+    if ref and ref == request.url.netloc.lower().removeprefix("www."):
+        ref = ""
+    country = (request.headers.get("cf-ipcountry") or request.headers.get("x-country-code") or "").upper()[:2]
+    k = (time.strftime("%Y-%m-%d", time.gmtime()), path[:200], ref[:100], country if country.isalpha() else "")
+    with _views_lock:
+        _views[k] = _views.get(k, 0) + 1
+        due = time.time() - _views_flushed[0] > VIEW_FLUSH_SECONDS
+    if due:
+        threading.Thread(target=flush_views, daemon=True).start()
+
+
+def flush_views():
+    with _views_lock:
+        batch = dict(_views)
+        _views.clear()
+        _views_flushed[0] = time.time()
+    try:
+        db.add_pageviews(batch)
+    except Exception:
+        with _views_lock:  # keep the counts for the next try
+            for k, n in batch.items():
+                _views[k] = _views.get(k, 0) + n
 
 
 def rate_ok(ip, now=None):
@@ -135,8 +189,9 @@ async def cache_and_headers(request: Request, call_next):
             resp = Response(body, status_code=resp.status_code, headers=headers)
     else:
         resp = await call_next(request)
-        if request.method != "GET" and resp.status_code < 400:
+        if request.method != "GET" and resp.status_code < 400 and request.url.path != "/feedback":
             clear_cache()
+    record_view(request, resp.status_code, resp.headers.get("content-type", ""))
     for k, v in SECURITY_HEADERS.items():
         resp.headers.setdefault(k, v)
     return resp
@@ -171,6 +226,11 @@ def redoc(request: Request):
 @app.on_event("startup")
 def _startup():
     db.init()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    flush_views()
 
 
 class EntryIn(BaseModel):
@@ -410,7 +470,7 @@ def adsense_head():
 
 
 SITE_FOOTER = ('<footer class="site-footer"><a href="/">Rankings</a> · <a href="/about">About</a> · '
-               '<a href="/privacy">Privacy</a></footer>')
+               '<a href="/privacy">Privacy</a> · <a href="/feedback">Suggest a person or feature</a></footer>')
 SITE_NAME = "Output"
 DEFAULT_DESC = ("Famous people ranked by the total measurable impact of their existence on Earth, good and bad. "
                 "Every counted claim needs 2 independent, trusted sources.")
@@ -1258,7 +1318,8 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
     base = _base(request)
     desc = person_description(name, person_card_lines(person_id, num))
     head = og_tags(f"{name} on Output", desc, f"{base}/people/{pid}", f"/cards/person/{pid}.png", base)
-    body = (f"<div class='person-head'>{photo}<div><h1>{escape(name)}</h1>{credit}<p class='toggle'>{toggle}</p></div></div>"
+    fb = f"<a href='/feedback?page=/people/{quote(person_id)}'>Suggest a correction or a claim</a>"
+    body = (f"<div class='person-head'>{photo}<div><h1>{escape(name)}</h1>{credit}<p class='toggle'>{toggle} · {fb}</p></div></div>"
             f"{_person_totals(v)}{counted}{est}"
             "<h2>Not counted / unproven</h2><p class='muted'>Unproven or rejected claims. They are shown for transparency and do not affect the totals.</p>"
             f"{nc}")
@@ -1266,10 +1327,81 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
                  f"<article class='doc'>{body}</article>", head)
 
 
+# ---------- feedback + admin pages ----------
+def _admin_required(request):
+    want = os.environ.get("ADMIN_KEY")
+    if not want or not secrets.compare_digest(_key(request), want):
+        raise HTTPException(404, "Not Found")
+
+
+@app.get("/feedback", response_class=HTMLResponse)
+def ui_feedback(request: Request, page: str = "", sent: bool = False):
+    if sent:
+        body = "<p>Thank you! Your message was received.</p><p><a href='/'>Back to the rankings</a></p>"
+    else:
+        pg = page if page.startswith("/") else ""
+        body = f"""<p>Tell us who should be added, a claim we missed (with sources if you have them), or a feature idea.</p>
+<form method="post" action="/feedback" class="fb">
+<input type="hidden" name="page" value="{escape(pg)}">
+<p><label>Message<br><textarea name="message" rows="6" required maxlength="2000" style="width:100%"></textarea></label></p>
+<p><label>Email (optional, only if you want a reply)<br><input type="email" name="email" maxlength="200" style="width:100%"></label></p>
+<p class="hp" style="position:absolute;left:-5000px" aria-hidden="true"><label>Website <input name="website" tabindex="-1" autocomplete="off"></label></p>
+<p><button>Send</button></p></form>"""
+    return page_(request, body)
+
+
+def page_(request, body):
+    return page("Suggest a person or feature", body, desc="Suggest a person, a missing claim or a feature for Output.",
+                canonical=_base(request) + "/feedback")
+
+
+@app.post("/feedback")
+def ui_feedback_post(message: str = Form(""), email: str = Form(""), page: str = Form(""), website: str = Form("")):
+    if website.strip():  # honeypot: silently drop
+        return RedirectResponse("/feedback?sent=1", status_code=303)
+    message, email = message.strip(), email.strip()
+    if not message or len(message) > 2000:
+        raise HTTPException(422, "message must be 1-2000 characters")
+    if email and (len(email) > 200 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email)):
+        raise HTTPException(422, "invalid email")
+    db.add_feedback(message, email or None, page[:200] if page.startswith("/") else None)
+    return RedirectResponse("/feedback?sent=1", status_code=303)
+
+
+def _kv_table(title, rows, link=False):
+    trs = "".join(f"<tr><td>{(f'<a href={chr(39)}{escape(k)}{chr(39)}>{escape(k)}</a>' if link else escape(k or '-'))}</td>"
+                  f"<td class='r'>{n:,}</td></tr>" for k, n in rows) or "<tr><td colspan=2 class='na'>None yet.</td></tr>"
+    return f"<h2>{title}</h2><div class='tw'><table><tr><th>{title}</th><th class='r'>Views</th></tr>{trs}</table></div>"
+
+
+@app.get("/admin/stats", response_class=HTMLResponse)
+def admin_stats(request: Request, days: int = 30):
+    _admin_required(request)
+    flush_views()
+    st = db.pageview_stats(max(1, min(days, 366)))
+    total = sum(n for _, n in st["by_day"])
+    body = (f"<p>Last {days} days: <b>{total:,}</b> page views (humans only; bots and admin visits excluded). "
+            "Anonymous daily totals, no cookies.</p>"
+            + _kv_table("Day", st["by_day"]) + _kv_table("Page / tab", st["pages"], True)
+            + _kv_table("Person page", st["people"], True) + _kv_table("Referrer", st["referrers"])
+            + _kv_table("Country", st["countries"]))
+    return page("Visitor stats", body, head='<meta name="robots" content="noindex">')
+
+
+@app.get("/admin/feedback", response_class=HTMLResponse)
+def admin_feedback(request: Request):
+    _admin_required(request)
+    rows = "".join(f"<tr><td>{escape(f['created_at'][:16].replace('T', ' '))} UTC</td><td>{escape(f['message'])}</td>"
+                   f"<td>{escape(f['email'] or '')}</td><td>{escape(f['page'] or '')}</td></tr>"
+                   for f in db.list_feedback()) or "<tr><td colspan=4 class='na'>No feedback yet.</td></tr>"
+    return page("Feedback", "<div class='tw'><table><tr><th>When</th><th>Message</th><th>Email</th><th>Page</th></tr>"
+                f"{rows}</table></div>", head='<meta name="robots" content="noindex">')
+
+
 # ---------- SEO ----------
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt(request: Request):
-    return Response(f"User-agent: *\nAllow: /\n\nSitemap: {_base(request)}/sitemap.xml\n", media_type="text/plain")
+    return Response(f"User-agent: *\nAllow: /\nDisallow: /admin/\n\nSitemap: {_base(request)}/sitemap.xml\n", media_type="text/plain")
 
 
 @app.get("/sitemap.xml", include_in_schema=False)
@@ -1320,6 +1452,13 @@ to this site and/or other sites on the Internet.</p>
 <p>You can learn how Google uses data and how to control it here:
 <a href="https://policies.google.com/technologies/ads" target="_blank" rel="noopener">https://policies.google.com/technologies/ads</a>.
 You can opt out of personalized advertising in <a href="https://adssettings.google.com" target="_blank" rel="noopener">Google Ads Settings</a>.</p>
+<h2>Visitor statistics</h2>
+<p>We count page views with our own simple, anonymous statistics: the page visited, the day, the referring website's
+domain and, when our host provides it, the visitor's country. We don't use cookies for this and don't store IP
+addresses or any other personal data. Counts are kept only as daily totals.</p>
+<h2>Feedback</h2>
+<p>If you use the "Suggest a person or feature" form, we store your message, the page you sent it from and, only if you
+give it, your email address, so we can reply. We don't share it.</p>
 <h2>Submissions</h2>
 <p>If you submit an entry, the text and sources you enter are stored and may be published after review. Do not include personal information in submissions.</p>
 <h2>Contact</h2>
