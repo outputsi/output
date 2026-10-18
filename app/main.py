@@ -531,6 +531,12 @@ def pretty(person_id, names=None):
     return " ".join(w.capitalize() for w in person_id.replace("_", "-").split("-") if w)
 
 
+def img_fallback(person_id):
+    """onerror: swap a broken photo for the initials placeholder."""
+    return (' onerror="this.outerHTML=\'&lt;div class=&quot;avatar initials-fallback&quot;&gt;'
+            f'{escape(initials(person_id))}&lt;/div&gt;\'"')
+
+
 def initials(person_id):
     words = pretty(person_id).split()
     return "".join(w[0] for w in words[:2]).upper() or "?"
@@ -846,7 +852,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     if tab != "overall":
         for p in (ranked if tab == "culture" else tab_ranking(tab, include_estimates, unit if tab == "influence" else None)):
             pid = escape(p["person_id"])
-            av = (f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy">' if p["image_url"]
+            av = (f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy"{img_fallback(p["person_id"])}>' if p["image_url"]
                   else f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>')
             cards.append(f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
                          f'<div class="name">{escape(p["name"])}</div><div class="score">{escape(p["label"])}'
@@ -855,7 +861,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     for p in (ranking(include_estimates) if tab == "overall" else []):
         pid = escape(p["person_id"])
         if p["image_url"]:
-            av = f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy">'
+            av = f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy"{img_fallback(p["person_id"])}>'
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
         sc = f'Score {p["score"]:.0f}' if p["ranked"] else ""
@@ -1243,7 +1249,7 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
     photo = f'<div class="avatar">{escape(initials(person_id))}</div>'
     credit = ""
     if pr and pr["image_url"]:
-        photo = f'<img src="{escape(photo_src(person_id, pr["image_url"]))}" alt="{escape(name)}">'
+        photo = f'<img src="{escape(photo_src(person_id, pr["image_url"]))}" alt="{escape(name)}"{img_fallback(person_id)}>'
         if pr["image_credit"] or pr["image_license_url"]:
             lic = pr["image_license_url"] or ""
             lic_html = (f' (<a href="{escape(lic)}" target="_blank" rel="noopener">license</a>)'

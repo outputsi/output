@@ -854,3 +854,13 @@ def test_influence_tab_neutral(client, monkeypatch):
     assert m.card_tab_data("influence", "attention")[1][0] == ("A", "=", "5 million views", False)
     assert "40</b> languages" in client.get("/people/a").text
     assert client.get("/cards/tab/influence.png").status_code == 200
+
+
+def test_broken_photo_falls_back_to_initials(client):
+    _approve(client, person_id="ada-lovelace", scale=1, unit="lives")
+    client.post("/api/people/ada-lovelace/image", json={"image_url": "https://img.example/broken.jpg"})
+    h = client.get("/").text
+    assert "onerror=" in h and "initials-fallback" in h.split("onerror=")[1][:120] and "AL" in h.split("onerror=")[1][:160]
+    assert "onerror=" in client.get("/people/ada-lovelace").text
+    client.post("/api/people/ada-lovelace/image", json={"image_url": ""})
+    assert '<div class="avatar placeholder">AL</div>' in client.get("/").text
