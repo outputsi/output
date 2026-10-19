@@ -877,25 +877,76 @@ def test_broken_photo_falls_back_to_initials(client):
 HUMAN = {"user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1"}
 
 
+def _beacon(client, path, headers=None, ref="", **extra):
+    h = {**HUMAN, "origin": "http://testserver", **(headers or {})}
+    return client.post("/v", json={"p": path, "r": ref, **extra}, headers=h)
+
+
 def test_pageview_stats(client, monkeypatch):
     from app import main as m
     m._views.clear()
+    m._beacon_hits.clear()
     _approve(client, person_id="ada-lovelace", scale=1, unit="lives")
     monkeypatch.setenv("ADMIN_KEY", "k")
-    client.get("/?tab=jobs", headers={**HUMAN, "referer": "https://t.co/abc", "cf-ipcountry": "US"})
-    client.get("/?tab=jobs", headers=HUMAN)
-    client.get("/people/ada-lovelace", headers=HUMAN)
-    client.get("/", headers={"user-agent": "Googlebot/2.1"})              # bot
-    client.get("/", headers={"user-agent": "curl/8.0"})                   # keepalive-style
-    client.get("/api/ranking?tab=lives", headers=HUMAN)                   # not a page
-    client.get("/people/nobody", headers=HUMAN)                           # 404
+    page = client.get("/?tab=jobs", headers=HUMAN)
+    assert "sendBeacon('/v'" in page.text and "googletagmanager" not in page.text and "plausible" not in page.text
+    assert "set-cookie" not in page.headers
+    # Fetching the HTML is not a visit, and neither is a bot, a preview, a headless browser,
+    # a hosting network, the team box, Tor, or a browser that opted out.
+    _beacon(client, "/?tab=jobs", ref="https://t.co/abc", headers={"cf-ipcountry": "US"})
+    _beacon(client, "/?tab=jobs", headers={"cf-ipcountry": "US"})
+    _beacon(client, "/people/ada-lovelace", headers={"cf-ipcountry": "US", "x-forwarded-for": "203.0.113.50"})
+    _beacon(client, "/", headers={"user-agent": "Googlebot/2.1"})
+    _beacon(client, "/", headers={"user-agent": "curl/8.0"})
+    _beacon(client, "/", headers={"user-agent": "Mozilla/5.0 HeadlessChrome/120.0"})
+    _beacon(client, "/", headers={"user-agent": "Twitterbot/1.0"})
+    _beacon(client, "/", headers={**HUMAN, "x-forwarded-for": "3.5.140.1"})          # AWS
+    _beacon(client, "/", headers={**HUMAN, "x-forwarded-for": "104.28.208.14"})      # team box
+    _beacon(client, "/", headers={**HUMAN, "cf-ipcountry": "T1"})                     # Tor
+    _beacon(client, "/?preview=1")
+    _beacon(client, "/api/ranking")
+    assert client.post("/v", json={"p": "/"}, headers={**HUMAN, "origin": "https://evil.example"}).status_code == 204
     assert client.get("/admin/stats").status_code == 404
     h = client.get("/admin/stats?admin_key=k").text
     assert "<b>3</b> page views" in h and "t.co" in h and ">US<" in h and "/people/ada-lovelace" in h
-    assert "/?tab=jobs" in h and "Googlebot" not in h
+    assert "/?tab=jobs" in h and "Googlebot" not in h and "203.0.113.50" not in h and "104.28.208.14" not in h
+    assert "Unique visitors" in h and "Eastern" in h
+    assert "datacenter" in h and "headless" in h and "team" in h and "tor" in h
     st = m.db.pageview_stats()
     assert dict(st["pages"]) == {"/?tab=jobs": 2} and dict(st["people"]) == {"/people/ada-lovelace": 1}
-    assert "set-cookie" not in client.get("/", headers=HUMAN).headers
+    assert sum(n for _, n in st["uniques_by_day"]) == 2  # testclient address, plus 203.0.113.50
+    # The admin response set the opt-out cookie, so this browser is no longer counted.
+    assert "out_skip" in client.get("/admin/stats?admin_key=k").headers.get("set-cookie", "")
+    _beacon(client, "/about", headers={"cf-ipcountry": "US"})
+    assert "<b>3</b> page views" in client.get("/admin/stats?admin_key=k").text
+
+
+def test_visit_classification(monkeypatch):
+    from datetime import datetime, timezone
+    from app.visitors import classify_visit, eastern_day, ip_hash, is_datacenter, is_team_ip, ua_class
+    assert eastern_day(datetime(2026, 10, 19, 3, 30, tzinfo=timezone.utc)) == "2026-10-18"
+    assert ua_class("Mozilla/5.0 Safari/604.1") == "browser"
+    assert ua_class("Mozilla/5.0 HeadlessChrome/120") == "headless"
+    assert ua_class("Twitterbot/1.0") == "preview"
+    assert ua_class("curl/8.0") == "script"
+    assert ua_class("Googlebot/2.1") == "bot"
+    assert is_datacenter("8.8.8.8") is False and is_datacenter("127.0.0.1") is False
+    assert is_datacenter("3.5.140.1") and is_datacenter("34.1.1.1") and is_datacenter("167.99.1.1")
+    assert is_datacenter("116.202.1.1") and is_datacenter("51.38.1.1") and is_datacenter("43.128.1.1")
+    assert is_datacenter("104.28.208.14") is False
+    monkeypatch.delenv("TEAM_IPS", raising=False)
+    assert is_team_ip("104.28.208.14") and is_team_ip("203.0.113.9") is False
+    monkeypatch.setenv("TEAM_IPS", "203.0.113.9, 10.0.0.0/8")
+    assert is_team_ip("203.0.113.9") and is_team_ip("10.1.2.3") and is_team_ip("104.28.208.14") is False
+    monkeypatch.setenv("TEAM_IPS", "")
+    assert is_team_ip("104.28.208.14") is False
+    assert classify_visit("203.0.113.8", "Mozilla/5.0", "US", False) == ("browser", True)
+    assert classify_visit("3.5.140.1", "Mozilla/5.0", "US", False)[0] == "datacenter"
+    assert classify_visit("203.0.113.8", "Mozilla/5.0", "T1", False)[0] == "tor"
+    assert classify_visit("203.0.113.8", "Mozilla/5.0", "US", True)[0] == "optout"
+    monkeypatch.setenv("VIEW_SALT", "s")
+    assert ip_hash("203.0.113.8", "2026-10-18") != ip_hash("203.0.113.8", "2026-10-19")
+    assert "203.0.113.8" not in ip_hash("203.0.113.8", "2026-10-18")
 
 
 def test_feedback_form(client, monkeypatch):

@@ -42,7 +42,7 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Writes (except submitting pending entries) and ?preview=1 need the admin key when ADMIN_KEY is set.
-OPEN_POSTS = {"/api/entries", "/submit", "/import", "/feedback"}
+OPEN_POSTS = {"/api/entries", "/submit", "/import", "/feedback", "/v"}
 
 
 def _key(request):
@@ -76,39 +76,74 @@ def _client_ip(request):
     return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
 
 
-# ---------- anonymous page view stats (no cookies, no IPs; daily aggregates) ----------
-BOT_RE = re.compile(r"bot|crawl|spider|slurp|curl|wget|python|httpx|requests|go-http|java/|headless|lighthouse|"
-                    r"monitor|uptime|pingdom|preview|facebookexternalhit|embedly|axios|node-fetch|scrapy|feed", re.I)
+# ---------- visitor stats: counted only when a real browser beacons after the page is open ----------
 _views = {}
 _views_lock = threading.Lock()
 _views_flushed = [time.time()]
 VIEW_FLUSH_SECONDS = 30
+_beacon_hits = {}
+OPT_OUT_COOKIE = "out_skip"
+# Tiny first-party beacon. It does not run for automated browsers (navigator.webdriver) and waits
+# until the page has been visible, so a fetch of the HTML alone is not a visit.
+VIEW_BEACON = (
+    "<script>(function(){if(navigator.webdriver)return;var s=false;function send(){if(s||document.visibilityState==="
+    "'hidden')return;s=true;var b=JSON.stringify({p:location.pathname+(location.search||''),r:document.referrer||''});"
+    "try{if(navigator.sendBeacon)navigator.sendBeacon('/v',new Blob([b],{type:'application/json'}));"
+    "else fetch('/v',{method:'POST',headers:{'content-type':'application/json'},body:b,keepalive:true})}catch(e){}}"
+    "function arm(){setTimeout(send,1200)}if(document.visibilityState==='visible')arm();"
+    "else document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')arm()},"
+    "{once:true});addEventListener('pointerdown',send,{once:true,passive:true})})();</script>"
+)
 
 
-def _view_path(request):
-    path = request.url.path
+def _view_path(raw):
+    """Public page path a beacon is allowed to count. Reviewer previews are not visits."""
+    parts = urlsplit(raw or "")
+    path = parts.path or "/"
+    q = dict(qc.split("=", 1) if "=" in qc else (qc, "") for qc in parts.query.split("&") if qc)
+    if q.get("preview", "").lower() in ("1", "true"):
+        return None
     if path == "/":
-        q = request.query_params
         tab, unit = q.get("tab", ""), q.get("unit", "")
+        if tab and not re.fullmatch(r"[a-z0-9-]{1,32}", tab):
+            tab = ""
+        if unit and not re.fullmatch(r"[a-z0-9-]{1,32}", unit):
+            unit = ""
         return "/" + (f"?tab={tab}" if tab else "") + (f"&unit={unit}" if tab and unit else "")
-    if path.startswith("/people/") or path in ("/about", "/privacy", "/feedback"):
+    if path in ("/about", "/privacy", "/feedback"):
         return path
+    if path.startswith("/people/"):
+        slug = path[len("/people/"):]
+        if slug and "/" not in slug and len(slug) <= 80 and re.fullmatch(r"[A-Za-z0-9._~-]{1,80}", slug):
+            return "/people/" + slug
     return None
 
 
-def record_view(request, status, content_type):
-    """Count a human HTML page view: path, referrer domain, country header. Bots and admin traffic excluded."""
-    if request.method != "GET" or status != 200 or not content_type.startswith("text/html"):
-        return
-    path = _view_path(request)
-    ua = request.headers.get("user-agent", "")
-    if path is None or not ua or BOT_RE.search(ua) or _key(request) or request.query_params.get("preview"):
-        return
-    ref = urlsplit(request.headers.get("referer", "")).netloc.lower().removeprefix("www.")
-    if ref and ref == request.url.netloc.lower().removeprefix("www."):
-        ref = ""
-    country = (request.headers.get("cf-ipcountry") or request.headers.get("x-country-code") or "").upper()[:2]
-    k = (time.strftime("%Y-%m-%d", time.gmtime()), path[:200], ref[:100], country if country.isalpha() else "")
+def _referrer_domain(raw, host):
+    ref = urlsplit(raw or "").netloc.lower().removeprefix("www.")
+    if ref and host and ref == host.lower().removeprefix("www."):
+        return ""
+    return ref[:100]
+
+
+def _beacon_allowed(ip):
+    """Quiet cap so a loop cannot fill the log. Extra calls are ignored, not errors."""
+    now = time.time()
+    with _views_lock:
+        hits = [t for t in _beacon_hits.get(ip, []) if now - t < 600]
+        if len(hits) >= 40:
+            _beacon_hits[ip] = hits
+            return False
+        hits.append(now)
+        _beacon_hits[ip] = hits
+        return True
+
+
+def note_visit(day, path, ref, country, ip_hash, ua_class, counted):
+    country = country or ""
+    if not (country.isalpha() or country == "T1"):
+        country = ""
+    k = (day, path[:200], (ref or "")[:100], country, ip_hash, ua_class, int(bool(counted)))
     with _views_lock:
         _views[k] = _views.get(k, 0) + 1
         due = time.time() - _views_flushed[0] > VIEW_FLUSH_SECONDS
@@ -122,7 +157,7 @@ def flush_views():
         _views.clear()
         _views_flushed[0] = time.time()
     try:
-        db.add_pageviews(batch)
+        db.add_visits(batch)
     except Exception:
         with _views_lock:  # keep the counts for the next try
             for k, n in batch.items():
@@ -221,12 +256,22 @@ async def _cache_and_headers(request: Request, call_next):
             resp = Response(body, status_code=resp.status_code, headers=headers)
     else:
         resp = await call_next(request)
-        if request.method != "GET" and resp.status_code < 400 and request.url.path != "/feedback":
+        if request.method != "GET" and resp.status_code < 400 and request.url.path not in ("/feedback", "/v"):
             clear_cache()
-    record_view(request, resp.status_code, resp.headers.get("content-type", ""))
+    if _team_opt_in_request(request):
+        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "") == "https"
+        resp.set_cookie(OPT_OUT_COOKIE, "1", max_age=31536000, httponly=True, samesite="lax",
+                        secure=secure, path="/")
     for k, v in SECURITY_HEADERS.items():
         resp.headers.setdefault(k, v)
     return resp
+
+
+def _team_opt_in_request(request):
+    """A valid admin key on any URL means this browser is the team: don't count it."""
+    want = os.environ.get("ADMIN_KEY")
+    got = _key(request)
+    return bool(want and got and secrets.compare_digest(got, want))
 
 
 @app.get("/openapi.json", include_in_schema=False)
@@ -258,6 +303,13 @@ def redoc(request: Request):
 @app.on_event("startup")
 def _startup():
     db.init()
+    threading.Thread(target=_warm_visitors, daemon=True).start()
+
+
+def _warm_visitors():
+    """Load the hosting-network list off the request path, so the first page stays fast."""
+    from .visitors import is_datacenter
+    is_datacenter("127.0.0.1")
 
 
 @app.on_event("shutdown")
@@ -525,7 +577,7 @@ def shell(title, desc, canonical, body, head="", extra_css=""):
     return HTMLResponse(f"""<!doctype html><html lang="en"><head>{head_common(title, desc, canonical)}{head}
 <style>{HOME_CSS}{PAGE_CSS}{extra_css}</style></head>
 <body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/">Rankings</a><a href="/about">About</a></nav></header>
-<main>{body}</main>{SITE_FOOTER}</body></html>""")
+<main>{body}</main>{SITE_FOOTER}{VIEW_BEACON}</body></html>""")
 
 
 def page(title, body, head="", desc=DEFAULT_DESC, canonical=None, h1=None):
@@ -1660,6 +1712,53 @@ def ui_feedback_post(message: str = Form(""), email: str = Form(""), page: str =
     return RedirectResponse("/feedback?sent=1", status_code=303)
 
 
+@app.post("/v", include_in_schema=False)
+async def view_beacon(request: Request):
+    """Count a visit only after the page's own script asks. Always 204, so a failed call is invisible."""
+    try:
+        _accept_beacon(request, await request.body())
+    except Exception:
+        pass
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
+def _accept_beacon(request, body):
+    from .visitors import classify_visit, eastern_day, ip_hash
+    origin = request.headers.get("origin", "")
+    site = request.headers.get("sec-fetch-site", "")
+    if site and site not in ("same-origin", "none"):
+        return
+    if origin:
+        host = urlsplit(origin).hostname or ""
+        if host not in {_request_host(request), _CANONICAL_HOST, "www.outputrank.com", "localhost",
+                        "127.0.0.1", "testserver"}:
+            return
+    elif site not in ("same-origin", "none"):
+        return
+    if body and len(body) > 2000:
+        return
+    try:
+        data = json.loads(body.decode() or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        return
+    if not isinstance(data, dict):
+        return
+    path = _view_path(str(data.get("p") or ""))
+    if not path:
+        return
+    ip = _client_ip(request)
+    day = eastern_day()
+    hashed = ip_hash(ip, day)
+    if not _beacon_allowed(hashed):
+        return
+    country = (request.headers.get("cf-ipcountry") or request.headers.get("x-country-code") or "").upper()[:2]
+    label, counted = classify_visit(ip, request.headers.get("user-agent", ""), country,
+                                    request.cookies.get(OPT_OUT_COOKIE) == "1")
+    ref = _referrer_domain(str(data.get("r") or ""), _request_host(request))
+    stored_country = country if country.isalpha() or country == "T1" else ""
+    note_visit(day, path, ref, stored_country, hashed, label, counted)
+
+
 def _kv_table(title, rows, link=False):
     trs = "".join(f"<tr><td>{(f'<a href={chr(39)}{escape(k)}{chr(39)}>{escape(k)}</a>' if link else escape(k or '-'))}</td>"
                   f"<td class='r'>{n:,}</td></tr>" for k, n in rows) or "<tr><td colspan=2 class='na'>None yet.</td></tr>"
@@ -1672,11 +1771,22 @@ def admin_stats(request: Request, days: int = 30):
     flush_views()
     st = db.pageview_stats(max(1, min(days, 366)))
     total = sum(n for _, n in st["by_day"])
-    body = (f"<p>Last {days} days: <b>{total:,}</b> page views (humans only; bots and admin visits excluded). "
-            "Anonymous daily totals, no cookies.</p>"
-            + _kv_table("Day", st["by_day"]) + _kv_table("Page / tab", st["pages"], True)
+    uniq = {d: n for d, n in st["uniques_by_day"]}
+    unique_total = sum(uniq.values())
+    day_rows = "".join(
+        f"<tr><td>{escape(d)}</td><td class='r'>{n:,}</td><td class='r'>{uniq.get(d, 0):,}</td></tr>"
+        for d, n in st["by_day"]) or "<tr><td colspan=3 class='na'>None yet.</td></tr>"
+    body = (f"<p>Last {days} days: <b>{total:,}</b> page views from <b>{unique_total:,}</b> real visitors "
+            "(unique per day). A view counts only after the page has been open in a normal browser. "
+            "Bots, link previews, hosting networks, Tor, headless browsers, and this team's browsers are left out. "
+            "Days are US Eastern time. Addresses are stored only as a hash that changes every day.</p>"
+            f"<h2>Day</h2><div class='tw'><table><tr><th>Day (Eastern)</th><th class='r'>Views</th>"
+            f"<th class='r'>Unique visitors</th></tr>{day_rows}</table></div>"
+            + _kv_table("Page / tab", st["pages"], True)
             + _kv_table("Person page", st["people"], True) + _kv_table("Referrer", st["referrers"])
-            + _kv_table("Country", st["countries"]))
+            + _kv_table("Country", st["countries"])
+            + _kv_table("Not counted", st["dropped"])
+            + _kv_table("Visitor hash", st["hashes"]))
     return page("Visitor stats", body, head='<meta name="robots" content="noindex">')
 
 
@@ -1772,9 +1882,11 @@ to this site and/or other sites on the Internet.</p>
 <a href="https://policies.google.com/technologies/ads" target="_blank" rel="noopener">https://policies.google.com/technologies/ads</a>.
 You can opt out of personalized advertising in <a href="https://adssettings.google.com" target="_blank" rel="noopener">Google Ads Settings</a>.</p>
 <h2>Visitor statistics</h2>
-<p>We count page views with our own simple, anonymous statistics: the page visited, the day, the referring website's
-domain and, when our host provides it, the visitor's country. We don't use cookies for this and don't store IP
-addresses or any other personal data. Counts are kept only as daily totals.</p>
+<p>We count anonymous page views with our own statistics, and only after a page has been open in a browser for a
+moment. We store the page, the day (US Eastern time), the referring website's domain, the country when our host
+provides it, a short label for the kind of browser, and a hash of the network address that changes every day so we
+can count unique visitors. We don't use a cookie for this for ordinary visitors, and we don't store the network
+address itself. The hash can't be used to recognize someone on a later day.</p>
 <h2>Feedback</h2>
 <p>If you use the "Suggest a person or feature" form, we store your message, the page you sent it from and, only if you
 give it, your email address, so we can reply. We don't share it.</p>
