@@ -317,46 +317,66 @@ def init():
             + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
             + ", entry_id INTEGER NOT NULL, url TEXT NOT NULL, quote TEXT NULL, "
             "added_by TEXT NULL, added_at TEXT NOT NULL)")
-        # Anonymous, aggregated page views (no cookies, no IPs) and feedback.
+        # Old server-side totals. Left in place; the stats page no longer reads them.
         cur.execute("CREATE TABLE IF NOT EXISTS pageviews (day TEXT NOT NULL, path TEXT NOT NULL, "
                     "referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', views INTEGER NOT NULL DEFAULT 0, "
                     "PRIMARY KEY (day, path, referrer, country))")
+        # Beacon visits. ip_hash is a daily-salted hash, never the address. counted=0 is an audit row.
+        cur.execute("CREATE TABLE IF NOT EXISTS visit_log (day TEXT NOT NULL, path TEXT NOT NULL, "
+                    "referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', "
+                    "ip_hash TEXT NOT NULL DEFAULT '', ua_class TEXT NOT NULL DEFAULT 'browser', "
+                    "counted INTEGER NOT NULL DEFAULT 1, views INTEGER NOT NULL DEFAULT 0, "
+                    "PRIMARY KEY (day, path, referrer, country, ip_hash, ua_class, counted))")
         cur.execute("CREATE TABLE IF NOT EXISTS feedback ("
                     + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
                     + ", created_at TEXT NOT NULL, message TEXT NOT NULL, email TEXT NULL, page TEXT NULL)")
     _initialized.add(key)
 
 
-def add_pageviews(counts):
-    """counts: {(day, path, referrer, country): n}. Adds to the daily aggregates."""
+def add_visits(counts):
+    """counts: {(day, path, referrer, country, ip_hash, ua_class, counted): n}."""
     if not counts:
         return
     _ensure()
     with connect() as (cur, ph):
-        sql = _q("INSERT INTO pageviews (day, path, referrer, country, views) VALUES (?,?,?,?,?) "
-                 "ON CONFLICT (day, path, referrer, country) DO UPDATE SET views = pageviews.views + excluded.views", ph)
-        for (day, path, ref, country), n in counts.items():
-            cur.execute(sql, (day, path, ref, country, n))
+        sql = _q("INSERT INTO visit_log (day, path, referrer, country, ip_hash, ua_class, counted, views) "
+                 "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (day, path, referrer, country, ip_hash, ua_class, counted) "
+                 "DO UPDATE SET views = visit_log.views + excluded.views", ph)
+        for (day, path, ref, country, ip_hash, ua_class, counted), n in counts.items():
+            cur.execute(sql, (day, path[:200], ref[:100], country[:2], ip_hash[:32], ua_class[:20], int(counted), int(n)))
         _invalidate_reads()
 
 
+def add_pageviews(counts):
+    """Legacy {(day, path, referrer, country): n}, stored as counted browser visits with no hash."""
+    add_visits({(*k, "", "browser", 1): n for k, n in counts.items()})
+
+
 def pageview_stats(days=30):
-    """Aggregates for the admin page."""
+    """Counted (real) visits for the admin page, plus how many were dropped and why."""
+    from .visitors import eastern_day
     _ensure()
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    today = datetime.fromisoformat(eastern_day())
+    since = (today - timedelta(days=days)).date().isoformat()
     out = {}
     with connect() as (cur, ph):
         for name, sql in (
-                ("by_day", "SELECT day AS k, SUM(views) AS n FROM pageviews WHERE day >= ? GROUP BY day ORDER BY day DESC"),
-                ("pages", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path NOT LIKE ? "
-                          "GROUP BY path ORDER BY n DESC LIMIT 30"),
-                ("people", "SELECT path AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND path LIKE ? "
-                           "GROUP BY path ORDER BY n DESC LIMIT 30"),
-                ("referrers", "SELECT referrer AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND referrer <> '' "
-                              "GROUP BY referrer ORDER BY n DESC LIMIT 30"),
-                ("countries", "SELECT country AS k, SUM(views) AS n FROM pageviews WHERE day >= ? AND country <> '' "
-                              "GROUP BY country ORDER BY n DESC LIMIT 30")):
-            # LIKE pattern passed as a parameter: a literal '%' breaks psycopg2's %s placeholders.
+                ("by_day", "SELECT day AS k, SUM(views) AS n FROM visit_log WHERE counted=1 AND day >= ? "
+                           "GROUP BY day ORDER BY day DESC"),
+                ("pages", "SELECT path AS k, SUM(views) AS n FROM visit_log WHERE counted=1 AND day >= ? "
+                          "AND path NOT LIKE ? GROUP BY path ORDER BY n DESC LIMIT 30"),
+                ("people", "SELECT path AS k, SUM(views) AS n FROM visit_log WHERE counted=1 AND day >= ? "
+                           "AND path LIKE ? GROUP BY path ORDER BY n DESC LIMIT 30"),
+                ("referrers", "SELECT referrer AS k, SUM(views) AS n FROM visit_log WHERE counted=1 AND day >= ? "
+                              "AND referrer <> '' GROUP BY referrer ORDER BY n DESC LIMIT 30"),
+                ("countries", "SELECT country AS k, SUM(views) AS n FROM visit_log WHERE counted=1 AND day >= ? "
+                              "AND country <> '' GROUP BY country ORDER BY n DESC LIMIT 30"),
+                ("uniques_by_day", "SELECT day AS k, COUNT(DISTINCT ip_hash) AS n FROM visit_log "
+                                   "WHERE counted=1 AND ip_hash <> '' AND day >= ? GROUP BY day ORDER BY day DESC"),
+                ("dropped", "SELECT ua_class AS k, SUM(views) AS n FROM visit_log WHERE counted=0 AND day >= ? "
+                            "GROUP BY ua_class ORDER BY n DESC"),
+                ("hashes", "SELECT ip_hash AS k, SUM(views) AS n FROM visit_log WHERE counted=1 AND ip_hash <> '' "
+                           "AND day >= ? GROUP BY ip_hash ORDER BY n DESC LIMIT 30")):
             cur.execute(_q(sql, ph), (since, "/people/%") if "LIKE ?" in sql else (since,))
             out[name] = [(r["k"], int(r["n"])) for r in map(_row, cur.fetchall())]
     return out
