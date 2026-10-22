@@ -178,7 +178,7 @@ def test_home_ranking_order(client):
     h = r.text
     # one tab each -> all listed under "Not enough data yet", ordered by entries then name
     assert "Not enough data yet" in h
-    order = [h.index(f'data-person="{p}"') for p in ("low-guy", "neg-one", "top-person")]
+    order = [h.index(f'data-person="{p}"') for p in ("low-guy", "top-person", "neg-one")]  # harms-only person has no Overall tabs, so last
     assert order == sorted(order) and 'data-person="pending-only"' not in h
     assert 'href="/people/top-person"' in h and "Top Person" in h
 
@@ -471,7 +471,7 @@ def test_nonconvertible_lines_shown(client):
     _approve(client, person_id="mix2", scale=500, category="jobs", unit="jobs")
     _approve(client, person_id="zero-but-counted", scale=50)
     h = client.get("/?tab=overall").text
-    assert '<div class="positions">Lives #1, People #2, Jobs #1</div>' in h and "Score 67" in h
+    assert '<div class="positions">Lives #1, Jobs #1</div>' in h and "Score 100" in h  # net-negative People tab earns nothing
     assert 'data-person="zero-but-counted"' in h
     assert "78,000 people harmed" in client.get("/people/mix2").text
     assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
@@ -1115,3 +1115,20 @@ def test_economy_harms_only_notice(client):
     _approve(client, person_id="creator", scale=1000, direction=1, category="economy", unit="USD")
     assert client.get("/api/ranking?tab=economy").json()[0]["person_id"] == "creator"
     assert "harms-only" not in client.get("/?tab=economy").text
+
+
+def test_overall_harms_never_earn_points(client):
+    from app import main
+    # economy: only harms -> excluded from Overall entirely
+    _approve(client, person_id="fined", scale=250, direction=-1, category="economy", unit="USD")
+    _approve(client, person_id="fined", scale=5, category="jobs", unit="jobs")
+    _approve(client, person_id="fined", scale=1, category="people", unit="lives")
+    _approve(client, person_id="good", scale=10, category="jobs", unit="jobs")
+    _approve(client, person_id="good", scale=2, category="people", unit="lives")
+    _approve(client, person_id="harmer", scale=9, direction=-1, category="jobs", unit="jobs")
+    _approve(client, person_id="harmer", scale=9, direction=-1, category="people", unit="lives")
+    main.clear_cache()
+    pos = {p["person_id"]: p for p in client.get("/api/ranking?tab=overall").json()}
+    assert all(t["tab"] != "Economy" for p in pos.values() for t in p["tabs"])
+    assert pos["harmer"]["tabs"] == [] and not pos["harmer"]["ranked"]
+    assert pos["good"]["score"] == 100 and pos["fined"]["score"] == 0

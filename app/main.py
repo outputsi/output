@@ -692,12 +692,14 @@ def initials(person_id):
 
 
 OVERALL_MIN_TABS = 2
-OVERALL_EXPLAIN = ("Overall averages each person's position across the category tabs: 100 = 1st on a tab, 0 = last. "
+OVERALL_EXPLAIN = ("Overall averages each person's position across the category tabs where their net is positive: 100 = 1st among positives, 0 = last. "
+                   "Harms never earn points; a tab where no one is positive is left out. "
                    "Nothing is converted into money or into another category. Needs at least 2 tabs.")
 
 
 def _tab_positions(ranked):
-    """{person_id: (rank, of, percentile)}: 100 for 1st, 0 for last, linear; ties share a rank; one person = 100."""
+    """{person_id: (rank, of, percentile)} among people with a positive net only: 100 for 1st, 0 for last, linear; ties share a rank; one person = 100."""
+    ranked = [p for p in ranked if p["net"] > 0]  # harms never earn Overall points; no positives = tab excluded
     nets = [p["net"] for p in ranked]
     n = len(nets)
     out = {}
@@ -1920,7 +1922,7 @@ don't count on their own.</li>
 <li>Estimates are allowed when 2 very trusted sources give an approximate figure, and are labeled <i>est.</i></li>
 <li>Claims that don't meet these rules are still shown on the person's page as <i>unproven</i>, but don't affect the score.</li>
 <li>The <b>Overall</b> tab averages each person's position across the category tabs (Lives, People, Jobs,
-Economy, Climate, Nature, Culture): 1st on a tab scores 100, last scores 0, linear in between, and ties share a score.
+Economy, Climate, Nature, Culture): Only tabs where the person's net is positive count: 1st among them scores 100, last scores 0, linear in between, ties share a score. Harms never earn points, and a tab where no one is positive is left out.
 Culture counts as one tab (its Grammys, Oscars and Guinness sub-tabs are averaged). Nothing is converted into money
 and no category is converted into another. A person needs at least 2 tabs to be ranked; ties go to more tabs, then
 more counted entries.</li>
