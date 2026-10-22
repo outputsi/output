@@ -177,8 +177,7 @@ def test_home_ranking_order(client):
     assert r.status_code == 200
     h = r.text
     # one tab each -> all listed under "Not enough data yet", ordered by entries then name
-    assert "Not enough data yet" in h
-    order = [h.index(f'data-person="{p}"') for p in ("low-guy", "top-person", "neg-one")]  # harms-only person has no Overall tabs, so last
+    order = [h.index(f'data-person="{p}"') for p in ("top-person", "low-guy", "neg-one")]  # net impact order
     assert order == sorted(order) and 'data-person="pending-only"' not in h
     assert 'href="/people/top-person"' in h and "Top Person" in h
 
@@ -242,7 +241,7 @@ def test_home_90_10_bar(client):
     _approve(client, person_id="mixed", scale=90, category="climate", unit="tCO2e")
     _approve(client, person_id="mixed", scale=10, direction=-1, category="climate", unit="tCO2e")
     assert client.get("/api/people/mixed").json()["overall"]["negative_pct"] == pytest.approx(10)
-    assert '<div class="positions">Climate #1</div>' in client.get("/?tab=overall").text
+    assert '<div class="positions">Climate +100</div>' in client.get("/?tab=overall").text
 
 
 # ---------- credit sharing ----------
@@ -435,7 +434,7 @@ def test_categories_and_overall(client):
     assert set(ov["not_convertible"]) == {"jobs (jobs)", "people (people)"}
     assert sub(client, category="climate", unit="USD").status_code == 422
     h = client.get("/people/cat").text
-    assert "Counted totals by category" in h and "Overall score <b>" in h and "Lives #1" in h
+    assert "Counted totals by category" in h and "Overall score <b>" in h and "Lives +100" in h
     assert "$" not in client.get("/?tab=overall").text.split('<div class="grid">')[1]
     assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
@@ -471,7 +470,7 @@ def test_nonconvertible_lines_shown(client):
     _approve(client, person_id="mix2", scale=500, category="jobs", unit="jobs")
     _approve(client, person_id="zero-but-counted", scale=50)
     h = client.get("/?tab=overall").text
-    assert '<div class="positions">Lives #1, Jobs #1</div>' in h and "Score 100" in h  # net-negative People tab earns nothing
+    assert '<div class="positions">Jobs +100, Lives +100, People -100</div>' in h and "Score +100" in h  # harm subtracts
     assert 'data-person="zero-but-counted"' in h
     assert "78,000 people harmed" in client.get("/people/mix2").text
     assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
@@ -645,8 +644,7 @@ def test_overall_card_skips_zero_and_formats_big(client):
     _approve(client, person_id="singer", scale=5, direction=1, category="culture", unit="grammys")
     _approve(client, person_id="saver", scale=10, direction=1, category="people", unit="lives", is_estimate=True)
     title, rows, note = m.card_tab_data("overall")
-    assert "singer" not in [r[0].lower() for r in rows] and all(r[2] not in ("$0", "+$0") for r in rows)
-    assert title == "Top \u00b7 Overall" and rows == [] and "$" not in note  # nobody has 2 tabs yet
+    assert title.endswith("Overall") and {r[0] for r in rows} == {"Singer", "Saver"} and "$" not in note
     assert m.card_usd(1.42e16) == "+$14.2 quadrillion" and m.card_usd(1.56e10) == "+$15.6 billion"
     assert m.card_usd(-2.5e12) == "-$2.5 trillion" and m.card_usd(9.5e5) == "+$950K"
     assert m.card_usd(3e18) == "+$3,000 quadrillion"
@@ -800,35 +798,6 @@ def test_published_needs_counted_entry(client, monkeypatch):
     monkeypatch.setenv("ADMIN_KEY", "k")
     assert client.get("/people/nocount?preview=1").status_code == 401
     assert client.get("/people/nocount?preview=1&admin_key=k").status_code == 200
-
-
-def test_overall_average_tab_position(client):
-    from app import main as m
-    # Lives: a 10, b 5, c 1 -> a 100, b 50, c 0. Jobs: b 9, a 3 -> b 100, a 0. Culture grammys: c 2 -> c 100.
-    for pid, kw in [("a", dict(scale=10, unit="lives")), ("b", dict(scale=5, unit="lives")), ("c", dict(scale=1, unit="lives")),
-                    ("b", dict(scale=9, category="jobs", unit="jobs")), ("a", dict(scale=3, category="jobs", unit="jobs")),
-                    ("c", dict(scale=2, category="culture", unit="grammys")), ("solo", dict(scale=7, category="jobs", unit="jobs"))]:
-        _approve(client, person_id=pid, **kw)
-    r = client.get("/api/ranking?tab=overall").json()
-    by = {p["person_id"]: p for p in r}
-    # Jobs: b 9, solo 7, a 3 -> b 100, solo 50, a 0. So b 75, a 50, c 50 (a/c tie: same tabs and entries -> name)
-    assert by["b"]["score"] == 75 and by["a"]["score"] == 50 and by["c"]["score"] == 50
-    assert [p["person_id"] for p in r if p["ranked"]] == ["b", "a", "c"]
-    assert by["solo"]["ranked"] is False and by["solo"]["score"] is None
-    assert by["c"]["positions"] == "Lives #3, Grammys #1"
-    assert all("net" not in p and "positive_pct" not in p for p in r)
-    h = client.get("/?tab=overall").text
-    assert "Score 75" in h and "Not enough data yet" in h and "$" not in h.split('<div class="grid">')[1]
-    assert h.index('data-person="b"') < h.index('data-person="a"') < h.index('data-person="c"') < h.index('data-person="solo"')
-    title, rows, note = m.card_tab_data("overall")
-    assert rows[0] == ("B", "+", "Score 75", False) and len(rows) == 3 and "100 = 1st" in note
-
-
-def test_tab_positions_ties_and_single():
-    from app.main import _tab_positions
-    assert _tab_positions([{"person_id": "x", "net": 1}]) == {"x": (1, 1, 100.0)}
-    t = _tab_positions([{"person_id": p, "net": n} for p, n in (("a", 5), ("b", 5), ("c", 1))])
-    assert t["a"] == t["b"] == (1, 3, 100.0) and t["c"] == (3, 3, 0.0)
 
 
 def test_influence_tab_neutral(client, monkeypatch):
@@ -1117,18 +1086,38 @@ def test_economy_harms_only_notice(client):
     assert "harms-only" not in client.get("/?tab=economy").text
 
 
-def test_overall_harms_never_earn_points(client):
-    from app import main
-    # economy: only harms -> excluded from Overall entirely
-    _approve(client, person_id="fined", scale=250, direction=-1, category="economy", unit="USD")
-    _approve(client, person_id="fined", scale=5, category="jobs", unit="jobs")
-    _approve(client, person_id="fined", scale=1, category="people", unit="lives")
-    _approve(client, person_id="good", scale=10, category="jobs", unit="jobs")
-    _approve(client, person_id="good", scale=2, category="people", unit="lives")
-    _approve(client, person_id="harmer", scale=9, direction=-1, category="jobs", unit="jobs")
-    _approve(client, person_id="harmer", scale=9, direction=-1, category="people", unit="lives")
-    main.clear_cache()
-    pos = {p["person_id"]: p for p in client.get("/api/ranking?tab=overall").json()}
-    assert all(t["tab"] != "Economy" for p in pos.values() for t in p["tabs"])
-    assert pos["harmer"]["tabs"] == [] and not pos["harmer"]["ranked"]
-    assert pos["good"]["score"] == 100 and pos["fined"]["score"] == 0
+
+
+def test_overall_total_net_impact(client):
+    from app import main as m
+    # lives: borlaug 1e9, saver 1000, killer -215, small -1 ; economy: fined -250, bigfine -6e9, maker +5
+    for pid, kw in [("borlaug", dict(scale=1e9, unit="lives")), ("saver", dict(scale=1000, unit="lives")),
+                    ("killer", dict(scale=215, direction=-1, unit="lives")), ("small", dict(scale=1, direction=-1, unit="lives")),
+                    ("fined", dict(scale=250, direction=-1, category="economy", unit="USD")),
+                    ("fined", dict(scale=3, category="culture", unit="grammys")),
+                    ("bigfine", dict(scale=6e9, direction=-1, category="economy", unit="USD")),
+                    ("maker", dict(scale=5, category="economy", unit="USD"))]:
+        _approve(client, person_id=pid, **kw)
+    r = client.get("/api/ranking?tab=overall").json()
+    by = {p["person_id"]: p["score"] for p in r}
+    assert all(p["ranked"] for p in r) and len(r) == 7  # everyone appears
+    assert by["borlaug"] == 100 and by["saver"] == 50 and by["maker"] == 100
+    assert by["killer"] == -100 and by["small"] == -50 and by["bigfine"] == -100
+    # culture's 1 measure here has full weight; the smallest fine costs -50 of a +100 Grammys score: still positive
+    assert by["fined"] == 50
+    assert [p["person_id"] for p in r][-2:] in (["bigfine", "killer"], ["killer", "bigfine"])
+
+
+def test_overall_harm_never_raises_score(client):
+    _approve(client, person_id="x", scale=10, category="jobs", unit="jobs")
+    _approve(client, person_id="y", scale=5, category="jobs", unit="jobs")
+    before = {p["person_id"]: p["score"] for p in client.get("/api/ranking?tab=overall").json()}
+    _approve(client, person_id="x", scale=1, direction=-1, category="economy", unit="USD")
+    after = {p["person_id"]: p["score"] for p in client.get("/api/ranking?tab=overall").json()}
+    assert after["x"] < before["x"] and after["y"] == before["y"]
+
+
+def test_signed_position():
+    from app.main import _signed_position as sp
+    vals = [5, 5, 1, -1, -9]
+    assert sp(5, vals) == 1 and sp(1, vals) == 1 / 3 and sp(-1, vals) == -0.5 and sp(-9, vals) == -1 and sp(0, vals) == 0
