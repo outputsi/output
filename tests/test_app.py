@@ -1103,3 +1103,15 @@ def test_stats_and_feedback_on_real_postgres(pg_url, monkeypatch):
     assert r.status_code == 200 and "<b>4</b> page views" in r.text
     db.add_feedback("hello", None, "/people/a")
     assert c.get("/admin/feedback?admin_key=k").status_code == 200 and db.list_feedback()[0]["message"] == "hello"
+
+
+def test_economy_harms_only_notice(client):
+    _approve(client, person_id="small-fine", scale=250, direction=-1, category="economy", unit="USD")
+    _approve(client, person_id="big-fine", scale=500000, direction=-1, category="economy", unit="USD")
+    r = client.get("/api/ranking?tab=economy").json()
+    assert [p["person_id"] for p in r] == ["small-fine", "big-fine"]  # net order, smallest harm first
+    html = client.get("/?tab=economy").text
+    assert "harms-only" in html and "not a win" in html
+    _approve(client, person_id="creator", scale=1000, direction=1, category="economy", unit="USD")
+    assert client.get("/api/ranking?tab=economy").json()[0]["person_id"] == "creator"
+    assert "harms-only" not in client.get("/?tab=economy").text
