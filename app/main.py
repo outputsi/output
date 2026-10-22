@@ -860,6 +860,8 @@ def influence_ranking(unit=None):
     out.sort(key=lambda p: (-p["net"], p["person_id"]))
     return out
 DEFAULT_TAB = "lives"
+HARMS_ONLY_EXPLAIN = ("No positive impact is counted on this tab yet, only harms such as fines and losses. "
+                      "People are ordered by net (positive minus negative), so the top spot is the smallest counted harm, not a win.")
 CULTURE_RANK_UNITS = ("certified-units", "grammys")  # rank by certified units once any are approved, else Grammys
 # Culture sub-toggles: ?tab=culture&unit=<key>; each ranks one unit only, never summed.
 CULTURE_UNITS = {"certified": ("certified-units", "Certified units"), "grammys": ("grammys", "Grammys"),
@@ -1025,6 +1027,8 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
     grid = f'<div class="grid">{"".join(cards)}</div>' if cards else '<p class="empty">No counted entries in this category yet.</p>'
     if tab == "influence":
         grid = f'<p class="explain">{escape(influence_explain(unit))}</p>' + grid
+    elif tab not in ("overall", "culture") and shown and all(p["net"] <= 0 for p in shown):
+        grid = f'<p class="explain harms-only">{escape(HARMS_ONLY_EXPLAIN)}</p>' + grid
     if tab == "overall":
         grid = (f'<p class="explain">{OVERALL_EXPLAIN}</p>' + grid
                 + (f'<h2 class="nedy">Not enough data yet</h2><p class="muted">Counted on fewer than {OVERALL_MIN_TABS} '
