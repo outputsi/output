@@ -434,7 +434,7 @@ def test_categories_and_overall(client):
     assert set(ov["not_convertible"]) == {"jobs (jobs)", "people (people)"}
     assert sub(client, category="climate", unit="USD").status_code == 422
     h = client.get("/people/cat").text
-    assert "Counted totals by category" in h and "Overall score <b>" in h and "Lives +100" in h
+    assert "Counted totals by category" in h and "Overall score <b>" in h and "Lives +300" in h
     assert "$" not in client.get("/?tab=overall").text.split('<div class="grid">')[1]
     assert {c["unit"] for c in client.get("/api/conversions").json()} == {"lives", "tCO2e", "USD"} | {f"EUR-{y}" for y in (2004, 2008, 2013, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)}
     i = _approve(client, person_id="cat2", scale=7)
@@ -470,7 +470,7 @@ def test_nonconvertible_lines_shown(client):
     _approve(client, person_id="mix2", scale=500, category="jobs", unit="jobs")
     _approve(client, person_id="zero-but-counted", scale=50)
     h = client.get("/?tab=overall").text
-    assert '<div class="positions">Jobs +100, Lives +100, People -100</div>' in h and "Score +100" in h  # harm subtracts
+    assert '<div class="positions">Jobs +100, Lives +300, People -100</div>' in h and "Score +300" in h  # harm subtracts
     assert 'data-person="zero-but-counted"' in h
     assert "78,000 people harmed" in client.get("/people/mix2").text
     assert ["-", "-78,000 people"] in client.get("/api/people/mix2").json()["other"]
@@ -1089,23 +1089,20 @@ def test_economy_harms_only_notice(client):
 
 
 def test_overall_total_net_impact(client):
-    from app import main as m
-    # lives: borlaug 1e9, saver 1000, killer -215, small -1 ; economy: fined -250, bigfine -6e9, maker +5
     for pid, kw in [("borlaug", dict(scale=1e9, unit="lives")), ("saver", dict(scale=1000, unit="lives")),
-                    ("killer", dict(scale=215, direction=-1, unit="lives")), ("small", dict(scale=1, direction=-1, unit="lives")),
+                    ("killer", dict(scale=215, direction=-1, unit="lives")),
                     ("fined", dict(scale=250, direction=-1, category="economy", unit="USD")),
                     ("fined", dict(scale=3, category="culture", unit="grammys")),
-                    ("bigfine", dict(scale=6e9, direction=-1, category="economy", unit="USD")),
-                    ("maker", dict(scale=5, category="economy", unit="USD"))]:
+                    ("midfine", dict(scale=14e6, direction=-1, category="economy", unit="USD")),
+                    ("bigfine", dict(scale=6e9, direction=-1, category="economy", unit="USD"))]:
         _approve(client, person_id=pid, **kw)
     r = client.get("/api/ranking?tab=overall").json()
     by = {p["person_id"]: p["score"] for p in r}
-    assert all(p["ranked"] for p in r) and len(r) == 7  # everyone appears
-    assert by["borlaug"] == 100 and by["saver"] == 50 and by["maker"] == 100
-    assert by["killer"] == -100 and by["small"] == -50 and by["bigfine"] == -100
-    # culture's 1 measure here has full weight; the smallest fine costs -50 of a +100 Grammys score: still positive
-    assert by["fined"] == 50
-    assert [p["person_id"] for p in r][-2:] in (["bigfine", "killer"], ["killer", "bigfine"])
+    assert all(p["ranked"] for p in r) and len(r) == 6
+    assert by["borlaug"] == 300 and [p["person_id"] for p in r][0] == "borlaug" and r[-1]["person_id"] == "killer"
+    assert by["saver"] > 0 and by["killer"] < by["bigfine"] < by["midfine"] < 0  # no fine near deaths
+    assert by["bigfine"] == -25 and by["midfine"] > -8 and abs(by["midfine"]) * 3 < abs(by["bigfine"])
+    assert by["fined"] == 50 - 0.0 or by["fined"] > 49  # $250 fine barely registers
 
 
 def test_overall_harm_never_raises_score(client):
@@ -1117,7 +1114,6 @@ def test_overall_harm_never_raises_score(client):
     assert after["x"] < before["x"] and after["y"] == before["y"]
 
 
-def test_signed_position():
-    from app.main import _signed_position as sp
-    vals = [5, 5, 1, -1, -9]
-    assert sp(5, vals) == 1 and sp(1, vals) == 1 / 3 and sp(-1, vals) == -0.5 and sp(-9, vals) == -1 and sp(0, vals) == 0
+def test_log_score():
+    from app.main import _log_score as ls
+    assert ls(9, 9) == 1 and ls(-9, 9) == -1 and ls(0, 9) == 0 and 0 < ls(1, 99) < ls(9, 99) < 1

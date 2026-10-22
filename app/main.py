@@ -1,3 +1,4 @@
+import math
 import csv
 import io
 import json
@@ -692,23 +693,21 @@ def initials(person_id):
 
 
 OVERALL_MIN_TABS = 1  # everyone with a counted entry is ranked
-OVERALL_EXPLAIN = ("Overall ranks everyone by total net impact across all categories. Each measure (lives, people, jobs, "
-                   "economy $, tCO2e, ...) is scored on its own: a positive net scores up to +100 by its place among the people "
-                   "positive on that measure (the biggest = +100), a negative net scores down to \u2212100 by its place among the people "
-                   "negative on it (the biggest harm = \u2212100). Culture's sub-measures share one measure's weight. Scores are added, "
-                   "so a harm always lowers a score and never raises it.")
+OVERALL_EXPLAIN = ("Overall ranks everyone by total net impact across all categories. Each measure is scored by size on a "
+                   "log scale against the largest amount anyone has on it (that person = \u00b1100); harms stay negative and "
+                   "always subtract. Weights: lives count 3x, money (economy) 0.25x, culture awards share 0.5x, everything else 1x. "
+                   "Nothing is converted into money or across categories.")
+MONEY_UNIT = 1_000_000  # economy is measured in millions of USD, so amounts under ~$1M barely register
+MEASURE_WEIGHT = {"lives": 3.0, "USD": 0.25}
+CULTURE_WEIGHT = 0.5  # shared by all culture sub-measures
 
 
-def _signed_position(v, vals):
-    """+1..>0 for a positive net by its place among positives (largest = 1), <0..-1 for a negative net by its place
-    among negatives (largest harm = -1), 0 for zero. Ties share a place. Unit-free, so no unit dominates."""
-    if v > 0:
-        pos = [x for x in vals if x > 0]
-        return sum(1 for x in pos if x <= v) / len(pos)
-    if v < 0:
-        neg = [x for x in vals if x < 0]
-        return -sum(1 for x in neg if x >= v) / len(neg)
-    return 0.0
+def _log_score(v, biggest, unit=1.0):
+    """Signed magnitude on a log scale: sign(v) * log(1+|v|/unit) / log(1+biggest/unit), in [-1, 1]."""
+    if v == 0 or biggest <= 0:
+        return 0.0
+    x = math.log1p(abs(v) / unit) / math.log1p(biggest / unit)
+    return x if v > 0 else -x
 
 
 def overall_measure(c, u):
@@ -744,14 +743,15 @@ def ranking(include_estimates=True):
             nets[pid][m] += (sc["positive_total"] - sc["negative_total"]) * k
     measures = {m for d in nets.values() for m in d}
     n_culture = sum(1 for c, _ in measures if c == "culture") or 1
+    biggest = {m: max(abs(d.get(m, 0.0)) for d in nets.values()) for m in measures}
     people = []
     for pid, es in counted.items():
         tabs, total = [], 0.0
         for m, v in sorted(nets.get(pid, {}).items()):
             if v == 0:
                 continue
-            w = 1.0 / n_culture if m[0] == "culture" else 1.0
-            pts = 100.0 * w * _signed_position(v, [d.get(m, 0.0) for d in nets.values()])
+            w = CULTURE_WEIGHT / n_culture if m[0] == "culture" else MEASURE_WEIGHT.get(m[1], 1.0)
+            pts = 100.0 * w * _log_score(v, biggest[m], MONEY_UNIT if m[0] == "economy" else 1.0)
             total += pts
             tabs.append({"tab": MEASURE_LABEL.get(m[1], m[1]), "position": f"{pts:+.0f}", "percentile": round(pts, 1)})
         people.append({"person_id": pid, "name": pretty(pid, names), "ranked": True, "score": round(total, 1),
@@ -1932,13 +1932,14 @@ don't count on their own.</li>
 <li>Estimates are allowed when 2 very trusted sources give an approximate figure, and are labeled <i>est.</i></li>
 <li>Claims that don't meet these rules are still shown on the person's page as <i>unproven</i>, but don't affect the score.</li>
 <li>The <b>Overall</b> tab ranks every person with a counted entry by total net impact across all categories.
-Categories use different units, so each measure (lives, people, jobs, economy in USD, climate tCO2e, nature, and each culture
-award) is scored on its own, by position: a positive net scores between 0 and +100 by its place among everyone positive on
-that measure (largest = +100), and a negative net scores between 0 and &minus;100 by its place among everyone negative on it
-(largest harm = &minus;100). Ties share a place. Culture's sub-measures (Grammys, Oscars, Guinness, certified units) share
-one measure's weight. The scores are added up, so every harm lowers a score and never raises it, and no unit can dominate
-because each measure is capped at &plusmn;100. Economy amounts are converted to USD with official exchange rates; nothing else
-is converted. Positions show rank order within a measure, not size: they are relative to the other people counted.</li>
+Each measure (lives, people, jobs, economy in USD, climate tCO2e, nature, and each culture award) is scored on its own, by
+size on a log scale: score = 100 &times; weight &times; log(1 + amount) / log(1 + largest amount anyone has on that measure),
+negative for harms. So 10&times; more counts one step more, not 10&times; more, and no unit can dominate (each measure is
+capped at &plusmn;100 &times; weight). Economy is measured in millions of dollars, so small fines barely register. Weights:
+lives 3&times; (life and death matters most), economy 0.25&times; (fines and settlements are penalties, not direct harm to
+people), culture awards share 0.5&times;, everything else 1&times;. The scores are added up, so every harm lowers a score
+and never raises it. Economy amounts are converted to USD with official exchange rates; nothing else is converted into
+money or across categories.</li>
 <li>The <b>Influence</b> tab shows reach, not impact. <i>Languages</i> (the main measure, for lasting influence) counts
 the Wikipedia language editions with an article about the person, from Wikidata (the original record; the same measure
 MIT's Pantheon uses). <i>Attention</i> is English Wikipedia page views over the last 12 months, from the Wikimedia
