@@ -691,28 +691,39 @@ def initials(person_id):
     return "".join(w[0] for w in words[:2]).upper() or "?"
 
 
-OVERALL_MIN_TABS = 2
-OVERALL_EXPLAIN = ("Overall averages each person's position across the category tabs where their net is positive: 100 = 1st among positives, 0 = last. "
-                   "Harms never earn points; a tab where no one is positive is left out. "
-                   "Nothing is converted into money or into another category. Needs at least 2 tabs.")
+OVERALL_MIN_TABS = 1  # everyone with a counted entry is ranked
+OVERALL_EXPLAIN = ("Overall ranks everyone by total net impact across all categories. Each measure (lives, people, jobs, "
+                   "economy $, tCO2e, ...) is scored on its own: a positive net scores up to +100 by its place among the people "
+                   "positive on that measure (the biggest = +100), a negative net scores down to \u2212100 by its place among the people "
+                   "negative on it (the biggest harm = \u2212100). Culture's sub-measures share one measure's weight. Scores are added, "
+                   "so a harm always lowers a score and never raises it.")
 
 
-def _tab_positions(ranked):
-    """{person_id: (rank, of, percentile)} among people with a positive net only: 100 for 1st, 0 for last, linear; ties share a rank; one person = 100."""
-    ranked = [p for p in ranked if p["net"] > 0]  # harms never earn Overall points; no positives = tab excluded
-    nets = [p["net"] for p in ranked]
-    n = len(nets)
-    out = {}
-    for p in ranked:
-        rank = 1 + sum(1 for x in nets if x > p["net"])
-        out[p["person_id"]] = (rank, n, 100.0 if n == 1 else 100.0 * (n - rank) / (n - 1))
-    return out
+def _signed_position(v, vals):
+    """+1..>0 for a positive net by its place among positives (largest = 1), <0..-1 for a negative net by its place
+    among negatives (largest harm = -1), 0 for zero. Ties share a place. Unit-free, so no unit dominates."""
+    if v > 0:
+        pos = [x for x in vals if x > 0]
+        return sum(1 for x in pos if x <= v) / len(pos)
+    if v < 0:
+        neg = [x for x in vals if x < 0]
+        return -sum(1 for x in neg if x >= v) / len(neg)
+    return 0.0
+
+
+def overall_measure(c, u):
+    """Measure key: economy currencies are one measure (converted to USD with official rates)."""
+    return (c, "USD") if c == "economy" else (c, u)
+
+
+MEASURE_LABEL = {"lives": "Lives", "people": "People", "jobs": "Jobs", "USD": "Economy", "tCO2e": "Climate",
+                 "grammys": "Grammys", "academy-awards": "Oscars", "guinness-records": "Guinness records",
+                 "certified-units": "Certified units", "animals": "Nature animals", "hectares": "Nature hectares"}
 
 
 def ranking(include_estimates=True):
-    """Overall = mean of a person's percentile positions across the category tabs (no unit conversion).
-    Culture is one tab: its percentile is the mean over the culture sub-tabs the person appears on.
-    Ranked people need OVERALL_MIN_TABS tabs; others follow with ranked=False and score None."""
+    """Overall: every person with a counted entry, by the sum of signed per-measure positions (see OVERALL_EXPLAIN).
+    Returns [{person_id, name, ranked, score, tabs, positions, tab_count, counted_entries, estimated, image_url}]."""
     pub = db.published_ids()
     counted = {}
     for e in db.all_entries():
@@ -720,35 +731,34 @@ def ranking(include_estimates=True):
             counted.setdefault(e["person_id"], []).append(e)
     if not counted:
         return []
+    r = rates()
     names, images = db.display_names(), db.people_images()
-    pos = {}  # pid -> [(tab label, rank, of, pct)]
-    for key, label, _, _ in TABS:
-        if key == "overall" or key in NEUTRAL_TABS:
-            continue
-        if key == "culture":
-            sub = {}
-            for u in culture_unit_keys():
-                for pid, (rk, n, pc) in _tab_positions(tab_ranking("culture", include_estimates, u)).items():
-                    sub.setdefault(pid, []).append((CULTURE_UNITS[u][1], rk, n, pc))
-            for pid, items in sub.items():
-                lbl = ", ".join(f"{l} #{rk}" for l, rk, _, _ in items)
-                pos.setdefault(pid, []).append(("Culture", lbl, sum(x[3] for x in items) / len(items)))
-            continue
-        for pid, (rk, n, pc) in _tab_positions(tab_ranking(key, include_estimates)).items():
-            pos.setdefault(pid, []).append((label.replace(" $", ""), f"#{rk}", pc))
+    nets = {}  # pid -> {measure: net}
+    for pid, es in counted.items():
+        for (c, u), sc in by_category(es, include_estimates).items():
+            if c in NEUTRAL_TABS:
+                continue
+            k = r.get((c, u), 1.0) if c == "economy" else 1.0
+            m = overall_measure(c, u)
+            nets.setdefault(pid, {}).setdefault(m, 0.0)
+            nets[pid][m] += (sc["positive_total"] - sc["negative_total"]) * k
+    measures = {m for d in nets.values() for m in d}
+    n_culture = sum(1 for c, _ in measures if c == "culture") or 1
     people = []
     for pid, es in counted.items():
-        tabs = pos.get(pid, [])
-        ranked = len(tabs) >= OVERALL_MIN_TABS
-        score_ = sum(t[2] for t in tabs) / len(tabs) if tabs else None
-        people.append({"person_id": pid, "name": pretty(pid, names), "ranked": ranked,
-                       "score": round(score_, 1) if ranked else None,
-                       "tabs": [{"tab": t[0], "position": t[1], "percentile": round(t[2], 1)} for t in tabs],
-                       "positions": ", ".join(f"{t[0]} {t[1]}" if t[0] != "Culture" else f"{t[1]}" for t in tabs),
+        tabs, total = [], 0.0
+        for m, v in sorted(nets.get(pid, {}).items()):
+            if v == 0:
+                continue
+            w = 1.0 / n_culture if m[0] == "culture" else 1.0
+            pts = 100.0 * w * _signed_position(v, [d.get(m, 0.0) for d in nets.values()])
+            total += pts
+            tabs.append({"tab": MEASURE_LABEL.get(m[1], m[1]), "position": f"{pts:+.0f}", "percentile": round(pts, 1)})
+        people.append({"person_id": pid, "name": pretty(pid, names), "ranked": True, "score": round(total, 1),
+                       "tabs": tabs, "positions": ", ".join(f"{t['tab']} {t['position']}" for t in tabs),
                        "tab_count": len(tabs), "counted_entries": len(es),
                        "estimated": any(e.get("is_estimate") for e in es), "image_url": images.get(pid)})
-    people.sort(key=lambda p: (not p["ranked"], -(p["score"] or 0), -p["tab_count"], -p["counted_entries"],
-                               p["name"].lower(), p["person_id"]))
+    people.sort(key=lambda p: (-p["score"], -p["counted_entries"], p["name"].lower(), p["person_id"]))
     return people
 
 
@@ -891,7 +901,7 @@ def _culture_unit(tab, unit):
 TAB_DESC = {"lives": "lives saved and lost", "people": "people helped and harmed", "jobs": "jobs created and cut",
             "economy": "economic value created and destroyed, in US dollars", "climate": "greenhouse emissions (tCO2e)",
             "nature": "animals and hectares of nature protected and harmed", "culture": "certified sales, Grammys, Oscars and records",
-            "overall": "their average position across the category tabs",
+            "overall": "total net impact across all categories (harms subtract)",
             "influence": "reach (Wikipedia language editions and page views), not impact"}
 
 
@@ -1020,7 +1030,7 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
             av = f'<img class="avatar" src="{escape(photo_src(p["person_id"], p["image_url"]))}" alt="{escape(p["name"])}" loading="lazy"{img_fallback(p["person_id"])}>'
         else:
             av = f'<div class="avatar placeholder">{escape(initials(p["person_id"]))}</div>'
-        sc = f'Score {p["score"]:.0f}' if p["ranked"] else ""
+        sc = f'Score {p["score"]:+.0f}' if p["ranked"] else ""
         (cards if p["ranked"] else rest).append(
             f'<a class="card" href="/people/{pid}{q}" data-person="{pid}">{av}'
             f'<div class="name">{escape(p["name"])}</div><div class="score">{sc}'
@@ -1346,9 +1356,9 @@ def card_tab_data(tab, unit=None):
     """(title, rows, note) for /cards/tab/{tab}.png. rows: [(name, sign, label, estimated)], at most 5."""
     t = next(t for t in TABS if t[0] == tab)
     note = "Sourced, counted entries only"
-    if tab == "overall":  # average tab position; only ranked people
-        rows = [(p["name"], "+", f"Score {p['score']:.0f}", p["estimated"]) for p in ranking() if p["ranked"]][:5]
-        note = "Average position across category tabs (100 = 1st)"
+    if tab == "overall":  # total net impact score
+        rows = [(p["name"], "+", f"Score {p['score']:+.0f}", p["estimated"]) for p in ranking() if p["ranked"]][:5]
+        note = "Total net impact: each measure \u00b1100, harms subtract"
     elif tab == "culture":
         ranked = tab_ranking(tab, culture_unit=unit)
         ru = CULTURE_UNITS[unit][0] if unit else next(
@@ -1567,7 +1577,7 @@ def _person_totals(v):
     me = next((p for p in ranking() if p["person_id"] == v["person_id"]), None)
     overall = ""
     if me:
-        overall = ("<p class='overall'>" + (f"Overall score <b>{me['score']:.0f}</b> (average tab position, 100 = 1st), from "
+        overall = ("<p class='overall'>" + (f"Overall score <b>{me['score']:+.0f}</b> (sum of signed measure scores; harms subtract), from "
                    if me["ranked"] else f"Overall: not enough data yet (needs {OVERALL_MIN_TABS} category tabs). Tab positions: ")
                    + f"{escape(me['positions'])}</p>")
     inf = INFLUENCE.get("people", {}).get(v["person_id"])
@@ -1921,11 +1931,14 @@ don't count on their own.</li>
 <li>Negative claims need a court or official finding.</li>
 <li>Estimates are allowed when 2 very trusted sources give an approximate figure, and are labeled <i>est.</i></li>
 <li>Claims that don't meet these rules are still shown on the person's page as <i>unproven</i>, but don't affect the score.</li>
-<li>The <b>Overall</b> tab averages each person's position across the category tabs (Lives, People, Jobs,
-Economy, Climate, Nature, Culture): Only tabs where the person's net is positive count: 1st among them scores 100, last scores 0, linear in between, ties share a score. Harms never earn points, and a tab where no one is positive is left out.
-Culture counts as one tab (its Grammys, Oscars and Guinness sub-tabs are averaged). Nothing is converted into money
-and no category is converted into another. A person needs at least 2 tabs to be ranked; ties go to more tabs, then
-more counted entries.</li>
+<li>The <b>Overall</b> tab ranks every person with a counted entry by total net impact across all categories.
+Categories use different units, so each measure (lives, people, jobs, economy in USD, climate tCO2e, nature, and each culture
+award) is scored on its own, by position: a positive net scores between 0 and +100 by its place among everyone positive on
+that measure (largest = +100), and a negative net scores between 0 and &minus;100 by its place among everyone negative on it
+(largest harm = &minus;100). Ties share a place. Culture's sub-measures (Grammys, Oscars, Guinness, certified units) share
+one measure's weight. The scores are added up, so every harm lowers a score and never raises it, and no unit can dominate
+because each measure is capped at &plusmn;100. Economy amounts are converted to USD with official exchange rates; nothing else
+is converted. Positions show rank order within a measure, not size: they are relative to the other people counted.</li>
 <li>The <b>Influence</b> tab shows reach, not impact. <i>Languages</i> (the main measure, for lasting influence) counts
 the Wikipedia language editions with an article about the person, from Wikidata (the original record; the same measure
 MIT's Pantheon uses). <i>Attention</i> is English Wikipedia page views over the last 12 months, from the Wikimedia
