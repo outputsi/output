@@ -568,13 +568,15 @@ DEFAULT_DESC = ("Famous people ranked by the total measurable impact of their ex
                 "Every counted claim needs 2 independent, trusted sources.")
 FAVICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" '
                'fill="#222"/><circle cx="32" cy="32" r="17" fill="none" stroke="#fff" stroke-width="8"/></svg>')
+# Search Console HTML-tag token. GOOGLE_SITE_VERIFICATION overrides it when set.
+GOOGLE_SITE_VERIFICATION = "U-xOES3Em5WFEBpSxNffq-28naupUD8ankcGpV9cXdM"
 
 
 def head_common(title, desc, canonical):
     """Viewport, title, description, canonical, favicon and AdSense: shared by every HTML page."""
     can = f'<link rel="canonical" href="{escape(canonical)}">' if canonical else ""
-    token = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip()
-    verify = f'<meta name="google-site-verification" content="{escape(token)}">' if token else ""
+    token = os.environ.get("GOOGLE_SITE_VERIFICATION", "").strip() or GOOGLE_SITE_VERIFICATION
+    verify = f'<meta name="google-site-verification" content="{escape(token)}">'
     return (f'<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{escape(title)}</title><meta name="description" content="{escape(desc)}">{can}{verify}'
             '<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="icon" href="/favicon.ico" sizes="32x32">'
@@ -1906,6 +1908,12 @@ def favicon_ico():
 def ads_txt():
     pub = adsense_client().removeprefix("ca-")
     return Response(f"google.com, {pub}, DIRECT, f08c47fec0942fa0\n", media_type="text/plain")
+
+
+@app.get("/googled5043f87436b00ee.html", include_in_schema=False)
+def google_site_verification_html():
+    """Search Console HTML-file check. Not a page, and not listed in the sitemap."""
+    return Response("google-site-verification: googled5043f87436b00ee.html\n", media_type="text/plain")
 
 
 @app.get("/privacy", response_class=HTMLResponse)

@@ -1030,11 +1030,13 @@ def test_search_copy_notes_and_canonical_host(client, monkeypatch):
     assert www.status_code == 301 and www.headers["location"] == "https://outputrank.com/about?q=1"
     assert client.get("/people/norman-borlaug").status_code == 200
 
-    assert "google-site-verification" not in client.get("/about").text
+    token = 'name="google-site-verification" content="U-xOES3Em5WFEBpSxNffq-28naupUD8ankcGpV9cXdM"'
+    assert token in client.get("/").text.split("</head>")[0]
+    assert token in client.get("/about").text
     monkeypatch.setenv("GOOGLE_SITE_VERIFICATION", "token-abc")
     assert 'name="google-site-verification" content="token-abc"' in client.get("/about").text
     monkeypatch.setenv("GOOGLE_SITE_VERIFICATION", "")
-    assert "google-site-verification" not in client.get("/privacy").text
+    assert token in client.get("/privacy").text
 
 
 PG_BIN = "/usr/lib/postgresql/18/bin"
@@ -1204,6 +1206,18 @@ def test_barra_headcount_correction_and_score(client):
     page = client.get("/people/mary-barra").text
     assert "156,000" in page and "Overall score <b>+82</b>" in page
     assert "sec.gov" in page  # cited-source block stays
+
+
+def test_google_search_console_verification(client):
+    token = 'name="google-site-verification" content="U-xOES3Em5WFEBpSxNffq-28naupUD8ankcGpV9cXdM"'
+    home = client.get("/")
+    assert home.status_code == 200 and token in home.text.split("</head>")[0]
+    assert token in client.get("/about").text.split("</head>")[0]
+    file = client.get("/googled5043f87436b00ee.html")
+    assert file.status_code == 200
+    assert file.headers["content-type"].startswith("text/plain")
+    assert file.text == "google-site-verification: googled5043f87436b00ee.html\n"
+    assert "googled5043f87436b00ee" not in client.get("/sitemap.xml").text
 
 
 def test_guides_pages_nav_and_sitemap(client):
