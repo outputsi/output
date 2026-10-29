@@ -111,8 +111,12 @@ def _view_path(raw):
         if unit and not re.fullmatch(r"[a-z0-9-]{1,32}", unit):
             unit = ""
         return "/" + (f"?tab={tab}" if tab else "") + (f"&unit={unit}" if tab and unit else "")
-    if path in ("/about", "/methodology", "/contact", "/terms", "/privacy", "/feedback"):
+    if path in ("/about", "/methodology", "/contact", "/terms", "/privacy", "/feedback", "/guides"):
         return path
+    if path.startswith("/guides/"):
+        slug = path[len("/guides/"):]
+        if slug in {g["slug"] for g in prose.GUIDES}:
+            return path
     if path.startswith("/people/"):
         slug = path[len("/people/"):]
         if slug and "/" not in slug and len(slug) <= 80 and re.fullmatch(r"[A-Za-z0-9._~-]{1,80}", slug):
@@ -184,7 +188,8 @@ SECURITY_HEADERS = {"Strict-Transport-Security": "max-age=31536000; includeSubDo
 # Cached public GET pages; any successful write (approve, reject, unproven, edit, publish, rename, image) clears it.
 CACHE_TTL = 600  # safety net for writes made directly in the database
 CACHE_PREFIXES = ("/people/", "/cards/", "/api/ranking", "/api/people/")
-CACHE_EXACT = {"/", "/sitemap.xml", "/methodology", "/contact", "/terms"}
+CACHE_EXACT = {"/", "/sitemap.xml", "/methodology", "/contact", "/terms", "/guides"}
+CACHE_EXACT.update(f"/guides/{g['slug']}" for g in prose.GUIDES)
 _cache = {}
 _cache_lock = threading.Lock()
 
@@ -555,8 +560,8 @@ def adsense_head():
 
 
 SITE_FOOTER = ('<footer class="site-footer"><a href="/">Rankings</a> · <a href="/about">About</a> · '
-               '<a href="/methodology">How we score</a> · <a href="/contact">Contact</a> · '
-               '<a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · '
+               '<a href="/guides">Guides</a> · <a href="/methodology">How we score</a> · '
+               '<a href="/contact">Contact</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · '
                '<a href="/feedback">Suggest a person or feature</a></footer>')
 SITE_NAME = "Output"
 DEFAULT_DESC = ("Famous people ranked by the total measurable impact of their existence on Earth, good and bad. "
@@ -579,7 +584,7 @@ def head_common(title, desc, canonical):
 def shell(title, desc, canonical, body, head="", extra_css=""):
     return HTMLResponse(f"""<!doctype html><html lang="en"><head>{head_common(title, desc, canonical)}{head}
 <style>{HOME_CSS}{PAGE_CSS}{extra_css}</style></head>
-<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/">Rankings</a><a href="/about">About</a><a href="/methodology">How we score</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></nav></header>
+<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/">Rankings</a><a href="/about">About</a><a href="/guides">Guides</a><a href="/methodology">How we score</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></nav></header>
 <main>{body}</main>{SITE_FOOTER}{VIEW_BEACON}</body></html>""")
 
 
@@ -1612,6 +1617,7 @@ main{padding:24px 16px}
 h1{font-size:1.6em;margin:.2em 0 .4em;line-height:1.25}.tab-h1{font-size:1.25em;font-weight:600;color:#333}
 h2{font-size:1.2em;margin-top:1.8em}h3{font-size:1.05em}
 .muted{color:#666;font-size:.9em}
+.guide-index{padding-left:1.2em}.guide-index li{margin:.85em 0}.guide-index .muted{display:block}
 .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
 table{border-collapse:collapse;width:100%;background:#fff;font-size:.92em}
 td,th{border-bottom:1px solid #eee;padding:8px 6px;text-align:left;vertical-align:top}
@@ -1865,7 +1871,8 @@ def sitemap_xml(request: Request):
     base = _base(request)
     paths = ["/"]
     paths += [f"/people/{quote(pid)}" for pid in sorted(public_ids())]
-    paths += ["/about", "/methodology", "/contact", "/terms", "/privacy"]
+    paths += ["/about", "/methodology", "/contact", "/terms", "/privacy", "/guides"]
+    paths += [f"/guides/{g['slug']}" for g in prose.GUIDES]
     site_day, by_person = _sitemap_dates()
     urls = ""
     for p in dict.fromkeys(paths):
@@ -1970,6 +1977,29 @@ Pageviews API. Influence is neutral, never positive or negative, and is not part
 <p>The site may carry ads to cover running costs. Advertisers have no say in rankings, scores or which claims are counted.</p>
 <p>Read <a href="/methodology">how scoring works</a>, see our <a href="/terms">Terms</a>, or <a href="/contact">contact us</a> with corrections and questions.</p>""",
                 desc="How Output ranks famous people: sourcing rules, what counts, estimates and unproven claims.", canonical=_base(request) + "/about")
+
+
+@app.get("/guides", response_class=HTMLResponse)
+def ui_guides(request: Request):
+    items = "".join(
+        f"<li><a href=\"/guides/{g['slug']}\">{escape(g['title'])}</a> "
+        f"<span class='muted'>{escape(g['dek'])}</span></li>"
+        for g in prose.GUIDES)
+    return page("Guides", f"""
+<p>These guides walk through Output's rankings using the people, filings, and scores already on the site.
+The rules they rely on are written out on <a href="/methodology">How we score</a>.</p>
+<ul class="guide-index">{items}</ul>""",
+                desc="Guides to Output's rankings: Borlaug, jobs, lives, unproven claims, units, harms, and estimates.",
+                canonical=_base(request) + "/guides")
+
+
+@app.get("/guides/{slug}", response_class=HTMLResponse)
+def ui_guide(slug: str, request: Request):
+    guide = next((g for g in prose.GUIDES if g["slug"] == slug), None)
+    if guide is None:
+        raise HTTPException(404, "Not Found")
+    return page(guide["title"], prose.guide_html(slug), desc=guide["desc"],
+                canonical=_base(request) + f"/guides/{slug}", h1=guide["h1"])
 
 
 @app.get("/methodology", response_class=HTMLResponse)

@@ -111,6 +111,62 @@ def page_body(name):
         return render_markdown(f.read())
 
 
+GUIDES_DIR = os.path.join(os.path.dirname(__file__), "guides")
+
+# Order is the order of the /guides index.
+GUIDES = [
+    {"slug": "why-borlaug-ranks-first",
+     "title": "Why Norman Borlaug ranks first",
+     "h1": "Why Norman Borlaug ranks first",
+     "desc": "Why Borlaug's estimated 1 billion lives, weighted three times, put him first on Output's Overall list.",
+     "dek": "A wheat breeder at +300, and what the list does when that estimate is switched off."},
+    {"slug": "how-the-jobs-ranking-works",
+     "title": "How the Jobs ranking works",
+     "h1": "How the Jobs ranking works",
+     "desc": "How Output's Jobs ranking counts company headcount from official filings, not pay or net worth.",
+     "dek": "Why a required filing becomes a jobs number, and why 42,000 jobs can still score in the 70s."},
+    {"slug": "how-the-lives-ranking-works",
+     "title": "How the Lives ranking works",
+     "h1": "How the Lives ranking works",
+     "desc": "How Output scores lives saved and lives lost, from Borlaug's estimate to Schindler's list of 1,098.",
+     "dek": "Borlaug, Schindler, Winton, and the counted deaths on the same scale."},
+    {"slug": "disputed-and-unproven-claims",
+     "title": "Disputed and unproven claims",
+     "h1": "How disputed and unproven claims are handled",
+     "desc": "How Output shows disputed and unproven claims, including Haber, Musk, and Zuckerberg, without scoring them.",
+     "dek": "The chlorine-gas toll, and the penalties that stay on the page at zero."},
+    {"slug": "why-units-are-not-added",
+     "title": "Why units are not added together",
+     "h1": "Why we never add different units together",
+     "desc": "Why Output keeps lives, jobs, and money in separate rows, and adds scores rather than raw amounts.",
+     "dek": "What Buffett's jobs and his fine have in common, and what they do not."},
+    {"slug": "what-makes-a-harm-count",
+     "title": "What makes a harm count",
+     "h1": "Fines, judgments, and harms: what makes a negative count",
+     "desc": "Which fines, judgments, and deaths Output counts, and which penalties stay unproven.",
+     "dek": "Official findings that lower a score, and penalties the page leaves unscored."},
+    {"slug": "estimates-and-hard-records",
+     "title": "Estimates and hard records",
+     "h1": "Estimates, hard records, and the est. label",
+     "desc": "What Output's est. label means, and how the Overall list changes when estimates are excluded.",
+     "dek": "Why Schindler becomes first, at +300, when the billion-life estimate is set aside."},
+    {"slug": "how-to-read-a-person-page",
+     "title": "How to read a person page",
+     "h1": "How to read a person page",
+     "desc": "How to read an Output person page: counted totals, sources, the score, and rows that did not count.",
+     "dek": "The order of the page, from the opening sentence to the unproven table."},
+]
+
+
+def guide_html(slug):
+    """Rendered guide, or None when slug is not one of the published guides."""
+    if not any(g["slug"] == slug for g in GUIDES):
+        return None
+    path = os.path.join(GUIDES_DIR, slug + ".md")
+    with open(path, encoding="utf-8") as f:
+        return render_markdown(f.read())
+
+
 def summary_section(person_id):
     """Approved summary for a person, or '' when this person has none."""
     if not _SLUG.fullmatch(person_id or ""):

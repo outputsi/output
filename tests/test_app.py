@@ -1206,6 +1206,38 @@ def test_barra_headcount_correction_and_score(client):
     assert "sec.gov" in page  # cited-source block stays
 
 
+def test_guides_pages_nav_and_sitemap(client):
+    import pathlib
+    import re
+    from app.main import _view_path
+    from app.prose import GUIDES
+    index = client.get("/guides")
+    assert index.status_code == 200
+    assert 'rel="canonical" href="http://testserver/guides"' in index.text
+    assert 'href="/methodology"' in index.text
+    assert 'href="/guides"' in client.get("/").text
+    assert 'href="/guides"' in client.get("/about").text
+    sitemap = client.get("/sitemap.xml").text
+    assert "/guides<" in sitemap or "/guides</loc>" in sitemap
+    for g in GUIDES:
+        path = "/guides/" + g["slug"]
+        assert path in index.text
+        page = client.get(path)
+        assert page.status_code == 200, path
+        assert f'rel="canonical" href="http://testserver{path}"' in page.text
+        assert 'href="/methodology"' in page.text
+        assert path + "</loc>" in sitemap or path in sitemap
+        assert _view_path(path) == path
+        text = pathlib.Path(f"app/guides/{g['slug']}.md").read_text()
+        words = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
+        words = words.replace("**", "").replace("*", "").replace("#", "")
+        n = len(words.split())
+        assert 800 <= n <= 1500, (g["slug"], n)
+    assert client.get("/guides/not-a-guide").status_code == 404
+    assert _view_path("/guides") == "/guides"
+    assert _view_path("/guides/not-a-guide") is None
+
+
 def test_rank_11_to_20_summaries(client):
     """Summaries for live Overall ranks 11-20 render from the page's own entries."""
     import pathlib
