@@ -1204,3 +1204,28 @@ def test_barra_headcount_correction_and_score(client):
     page = client.get("/people/mary-barra").text
     assert "156,000" in page and "Overall score <b>+82</b>" in page
     assert "sec.gov" in page  # cited-source block stays
+
+
+def test_rank_11_to_20_summaries(client):
+    """Summaries for live Overall ranks 11-20 render from the page's own entries."""
+    import pathlib
+    import re
+    from app.prose import summary_section
+    ids = ["elon-musk", "michael-dell", "jensen-huang", "mukesh-ambani", "lisa-su",
+           "jamie-dimon", "tim-cook", "sundar-pichai", "larry-ellison", "mark-zuckerberg"]
+    for pid in ids:
+        text = pathlib.Path(f"app/summaries/{pid}.md").read_text()
+        body = text.split("\n---\n")[0]
+        body = re.sub(r"^#.*\n", "", body)
+        body = re.sub(r"^\*Source page:.*\n", "", body)
+        body = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", body).replace("**", "").replace("*", "")
+        assert 250 <= len(body.split()) <= 400, pid
+        html = summary_section(pid)
+        assert html.startswith("<section class='summary'>") and "**" not in html
+        assert "Claim sources" in text
+    for pid in ("elon-musk", "michael-dell", "jensen-huang", "mark-zuckerberg"):
+        assert "not scored" in summary_section(pid)
+    _pub(client, "elon-musk", scale=1, unit="people")
+    page = client.get("/people/elon-musk").text
+    assert "125,665" in page and "not scored" in page
+    assert "Counted entries" in page and "Not counted / unproven" in page
