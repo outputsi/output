@@ -330,7 +330,36 @@ def init():
         cur.execute("CREATE TABLE IF NOT EXISTS feedback ("
                     + ("id SERIAL PRIMARY KEY" if pg else "id INTEGER PRIMARY KEY AUTOINCREMENT")
                     + ", created_at TEXT NOT NULL, message TEXT NOT NULL, email TEXT NULL, page TEXT NULL)")
+        _apply_entry_corrections(cur, ph)
     _initialized.add(key)
+
+
+# GM's FY2025 Form 10-K states approximately 88,000 hourly and 68,000 salaried employees
+# at 31 Dec 2025. 88,000 + 68,000 = 156,000. The same filing's table, in thousands, shows
+# Total Worldwide 155. Count the hourly + salaried sum on that one approved jobs entry.
+_BARRA_HEADCOUNT_SOURCE = "%gm-20251231%"
+_BARRA_OLD_SCALE = 155000
+_BARRA_NEW_SCALE = 156000
+_BARRA_ACTION = (
+    "General Motors headcount 156,000 worldwide at 31 Dec 2025 "
+    "(Form 10-K FY2025: approximately 88,000 hourly and 68,000 salaried employees). "
+    "The filing's table in thousands shows Total Worldwide 155."
+)
+_BARRA_NOTE = (
+    "SEC filing rule. Counted 88,000 hourly + 68,000 salaried = 156,000 from the same 10-K. "
+    "Table in thousands shows Total Worldwide 155. Organization credited alone; "
+    "Barra chair and CEO (chair since 2016), same 10-K. Headcount at one date."
+)
+
+
+def _apply_entry_corrections(cur, ph):
+    cur.execute(
+        _q("UPDATE entries SET scale=?, action=?, credit_note=? "
+           "WHERE person_id=? AND category=? AND unit=? AND direction=1 AND status='approved' "
+           "AND scale=? AND source LIKE ?", ph),
+        (_BARRA_NEW_SCALE, _BARRA_ACTION, _BARRA_NOTE,
+         "mary-barra", "jobs", "jobs", _BARRA_OLD_SCALE, _BARRA_HEADCOUNT_SOURCE),
+    )
 
 
 def add_visits(counts):

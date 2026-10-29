@@ -722,8 +722,9 @@ def test_seo_files(client):
     r = client.get("/robots.txt")
     assert r.status_code == 200 and "Allow: /" in r.text and "Sitemap: http://testserver/sitemap.xml" in r.text
     x = client.get("/sitemap.xml").text
-    for u in ("http://testserver/<", "/?tab=overall", "/people/ada-lovelace", "/about", "/privacy"):
+    for u in ("http://testserver/<", "/people/ada-lovelace", "/about", "/methodology", "/contact", "/terms", "/privacy"):
         assert u in x
+    assert "?tab=" not in x
     assert client.get("/favicon.ico").status_code == 200 and client.get("/favicon.svg").status_code == 200
     assert x.count("<lastmod>") == x.count("<loc>") and "<lastmod>" in x
     assert "T" not in x.split("<lastmod>")[1].split("</lastmod>")[0]
@@ -819,7 +820,7 @@ def test_influence_tab_neutral(client, monkeypatch):
     assert 'href="/?tab=influence&amp;unit=attention"' in client.get("/?tab=influence").text or \
         'href="/?tab=influence&unit=attention"' in client.get("/?tab=influence").text
     assert "Pantheon" in client.get("/?tab=influence").text and "page views" in client.get("/?tab=influence&unit=attention").text
-    assert "/?tab=influence&amp;unit=attention" in client.get("/sitemap.xml").text
+    assert "?tab=" not in client.get("/sitemap.xml").text
     assert client.get("/api/ranking?tab=overall").json() == before
     assert all(t["tab"] != "Influence" for p in before for t in p["tabs"])
     assert client.get("/people/hidden").status_code == 404  # influence doesn't make anyone public
@@ -1018,7 +1019,9 @@ def test_search_copy_notes_and_canonical_host(client, monkeypatch):
     jobs = client.get("/?tab=jobs").text
     assert "<title>Jobs ranking · Output</title>" in jobs
     assert 'property="og:title" content="Jobs ranking · Output"' in jobs
-    assert 'property="og:url" content="http://testserver/?tab=jobs"' in jobs
+    assert 'rel="canonical" href="http://testserver/"' in jobs
+    assert 'property="og:url" content="http://testserver/"' in jobs
+    assert 'property="og:url" content="http://testserver/?tab=jobs"' not in jobs
 
     gone = client.get("http://output-orrw.onrender.com/people/norman-borlaug?x=1", follow_redirects=False)
     assert gone.status_code == 301
@@ -1117,3 +1120,87 @@ def test_overall_harm_never_raises_score(client):
 def test_log_score():
     from app.main import _log_score as ls
     assert ls(9, 9) == 1 and ls(-9, 9) == -1 and ls(0, 9) == 0 and 0 < ls(1, 99) < ls(9, 99) < 1
+
+
+def test_static_pages_nav_and_sitemap(client):
+    from app.main import _view_path
+    home = client.get("/").text
+    assert "Who actually changed the world" in home
+    assert 'href="/methodology"' in home and "How we score" in home
+    assert "Who actually changed the world" not in client.get("/?tab=jobs").text
+    assert "Who actually changed the world" not in client.get("/?tab=lives").text
+    jobs = client.get("/?tab=culture&unit=grammys").text
+    assert 'rel="canonical" href="http://testserver/"' in jobs
+    assert 'name="robots" content="noindex,follow"' not in jobs
+    thin = client.get("/?include_estimates=0").text
+    assert 'rel="canonical" href="http://testserver/"' in thin
+    assert 'name="robots" content="noindex,follow"' in thin
+    assert 'name="robots" content="noindex,follow"' in client.get("/?tab=jobs&include_estimates=0").text
+    for path, needle in (("/methodology", "Two independent, very trusted sources"),
+                         ("/contact", "musicamalonllc@gmail.com"),
+                         ("/terms", "October 29, 2026")):
+        page = client.get(path)
+        assert page.status_code == 200, path
+        assert f'rel="canonical" href="http://testserver{path}"' in page.text
+        assert needle in page.text
+        assert path in client.get("/sitemap.xml").text
+    contact = client.get("/contact").text
+    terms = client.get("/terms").text
+    about = client.get("/about").text
+    assert "MAILING" not in contact and "[DATE]" not in terms and "[STATE]" not in terms
+    assert "laws of the United States" in terms
+    assert "Who runs Output" in about and "Many Malon" in about
+    assert "music producer and entrepreneur" in about and "MUSICA MALON LLC" in about
+    assert 'href="/contact"' in about and "Contact: musicamalonllc@gmail.com" not in about
+    for path in ("/methodology", "/contact", "/terms", "/about", "/privacy"):
+        assert f'href="{path}"' in home
+        assert _view_path(path) == path
+    assert "?tab=" not in client.get("/sitemap.xml").text
+    assert "How we score" in client.get("/?tab=overall").text
+
+
+def test_person_summaries_keep_source_blocks(client):
+    _pub(client, "fritz-haber", scale=1, unit="people")
+    _pub(client, "mary-barra", scale=1, category="jobs", unit="jobs")
+    _pub(client, "ada-lovelace", scale=1, unit="lives")
+    haber = client.get("/people/fritz-haber").text
+    assert "chlorine-gas harm is disputed among sources (about 1,000 vs 5,000 deaths) and is not yet scored" in haber
+    assert "Counted entries" in haber and "Not counted / unproven" in haber
+    barra = client.get("/people/mary-barra").text
+    assert "156,000" in barra and "88,000" in barra and "68,000" in barra
+    assert "155,000" not in barra
+    assert "<section class='summary'>" not in client.get("/people/ada-lovelace").text
+
+
+def test_barra_headcount_correction_and_score(client):
+    """88,000 hourly + 68,000 salaried on GM's 10-K counts as 156,000 and rescores on the jobs log scale."""
+    from app import db, main
+    source = "https://www.sec.gov/Archives/edgar/data/1467858/000146785826000013/gm-20251231.htm"
+    _approve(client, person_id="mary-barra", scale=155000, category="jobs", unit="jobs", source=source,
+             action="General Motors headcount ~155,000 worldwide at 31 Dec 2025 (Form 10-K FY2025, table in thousands: Total Worldwide 155)")
+    _approve(client, person_id="untouched", scale=155000, category="economy", unit="USD", source=source,
+             action="do not touch")
+    _approve(client, person_id="doug-mcmillon", scale=2_100_000, category="jobs", unit="jobs",
+             action="Walmart approximately 2.1 million")
+    _approve(client, person_id="other", scale=155000, category="jobs", unit="jobs", source=source,
+             action="someone else")
+    db._initialized.discard(db.DB_PATH)
+    db.init()
+    main.clear_cache()
+    rows = {e["person_id"] + ":" + e["category"]: e for e in db.all_entries()}
+    barra = rows["mary-barra:jobs"]
+    assert barra["scale"] == 156000
+    assert "156,000" in barra["action"] and "88,000" in barra["action"] and "68,000" in barra["action"]
+    assert "Total Worldwide 155" in barra["action"]
+    assert rows["untouched:economy"]["scale"] == 155000
+    assert rows["untouched:economy"]["action"] == "do not touch"
+    assert rows["other:jobs"]["scale"] == 155000 and rows["other:jobs"]["action"] == "someone else"
+    db._initialized.discard(db.DB_PATH)
+    db.init()  # already 156,000: leave it
+    assert [e for e in db.all_entries() if e["person_id"] == "mary-barra" and e["category"] == "jobs"][0]["scale"] == 156000
+    ranking = {p["person_id"]: p for p in client.get("/api/ranking?tab=overall").json()}
+    assert ranking["mary-barra"]["score"] == 82.1
+    assert ranking["mary-barra"]["positions"] == "Jobs +82"
+    page = client.get("/people/mary-barra").text
+    assert "156,000" in page and "Overall score <b>+82</b>" in page
+    assert "sec.gov" in page  # cited-source block stays

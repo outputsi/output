@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel, Field, ValidationError
 
-from . import cards, db
+from . import cards, db, prose
 from .scoring import by_category, credit_label, effective_scale, fmt_pct, overall, score
 
 UNITS = {"people": ("people", "lives"), "jobs": ("jobs",), "climate": ("tCO2e",),
@@ -111,7 +111,7 @@ def _view_path(raw):
         if unit and not re.fullmatch(r"[a-z0-9-]{1,32}", unit):
             unit = ""
         return "/" + (f"?tab={tab}" if tab else "") + (f"&unit={unit}" if tab and unit else "")
-    if path in ("/about", "/privacy", "/feedback"):
+    if path in ("/about", "/methodology", "/contact", "/terms", "/privacy", "/feedback"):
         return path
     if path.startswith("/people/"):
         slug = path[len("/people/"):]
@@ -184,7 +184,7 @@ SECURITY_HEADERS = {"Strict-Transport-Security": "max-age=31536000; includeSubDo
 # Cached public GET pages; any successful write (approve, reject, unproven, edit, publish, rename, image) clears it.
 CACHE_TTL = 600  # safety net for writes made directly in the database
 CACHE_PREFIXES = ("/people/", "/cards/", "/api/ranking", "/api/people/")
-CACHE_EXACT = {"/", "/sitemap.xml"}
+CACHE_EXACT = {"/", "/sitemap.xml", "/methodology", "/contact", "/terms"}
 _cache = {}
 _cache_lock = threading.Lock()
 
@@ -555,7 +555,9 @@ def adsense_head():
 
 
 SITE_FOOTER = ('<footer class="site-footer"><a href="/">Rankings</a> · <a href="/about">About</a> · '
-               '<a href="/privacy">Privacy</a> · <a href="/feedback">Suggest a person or feature</a></footer>')
+               '<a href="/methodology">How we score</a> · <a href="/contact">Contact</a> · '
+               '<a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · '
+               '<a href="/feedback">Suggest a person or feature</a></footer>')
 SITE_NAME = "Output"
 DEFAULT_DESC = ("Famous people ranked by the total measurable impact of their existence on Earth, good and bad. "
                 "Every counted claim needs 2 independent, trusted sources.")
@@ -577,7 +579,7 @@ def head_common(title, desc, canonical):
 def shell(title, desc, canonical, body, head="", extra_css=""):
     return HTMLResponse(f"""<!doctype html><html lang="en"><head>{head_common(title, desc, canonical)}{head}
 <style>{HOME_CSS}{PAGE_CSS}{extra_css}</style></head>
-<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/">Rankings</a><a href="/about">About</a></nav></header>
+<body><header class="top"><a class="brand" href="/">Output</a><nav><a href="/">Rankings</a><a href="/about">About</a><a href="/methodology">How we score</a><a href="/contact">Contact</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></nav></header>
 <main>{body}</main>{SITE_FOOTER}{VIEW_BEACON}</body></html>""")
 
 
@@ -696,7 +698,8 @@ OVERALL_MIN_TABS = 1  # everyone with a counted entry is ranked
 OVERALL_EXPLAIN = ("Overall ranks everyone by total net impact across all categories. Each measure is scored by size on a "
                    "log scale against the largest amount anyone has on it (that person = \u00b1100); harms stay negative and "
                    "always subtract. Weights: lives count 3x, money (economy) 0.25x, culture awards share 0.5x, everything else 1x. "
-                   "Nothing is converted into money or across categories.")
+                   "Nothing is converted into money or across categories. "
+                   "<a href=\"/methodology\">How we score</a>.")
 MONEY_UNIT = 1_000_000  # economy is measured in millions of USD, so amounts under ~$1M barely register
 MEASURE_WEIGHT = {"lives": 3.0, "USD": 0.25}
 CULTURE_WEIGHT = 0.5  # shared by all culture sub-measures
@@ -779,9 +782,12 @@ HOME_CSS = """
 .tabs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.tab{padding:6px 12px;border:1px solid #ccc;border-radius:16px;text-decoration:none;color:inherit}.tab.active{background:#222;color:#fff;border-color:#222}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#222;background:#fafafa}
-.top{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid #eee;background:#fff}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px 20px;flex-wrap:wrap;padding:16px 28px;border-bottom:1px solid #eee;background:#fff}
 .top .brand{font-weight:600;font-size:1.1em;color:#222;text-decoration:none}
-.top nav a{margin-left:20px;color:#555;text-decoration:none}
+.top nav{display:flex;flex-wrap:wrap;gap:6px 16px}
+.top nav a{color:#555;text-decoration:none}
+.home-intro{max-width:42rem;line-height:1.55;margin:4px 0 12px}
+.home-intro h2{margin-top:0}
 .top nav a:hover{color:#000}
 main{max-width:1100px;margin:0 auto;padding:36px 24px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:32px 24px}
@@ -1047,11 +1053,17 @@ def ui_home(request: Request, include_estimates: bool = True, tab: str = DEFAULT
                    f'category tabs, so not ranked on Overall yet. Still shown on their tabs.</p>'
                    f'<div class="grid">{"".join(rest)}</div>' if rest else ""))
     h1, ptitle, desc = tab_meta(tab, unit)
-    canonical = base + tab_path(tab, unit)
+    # Tab and unit views are near-copies of the homepage, so they point at / .
+    canonical = base + "/"
     og = og_tags(ptitle, desc, canonical, f"/cards/tab/{tab}.png" + (f"?unit={unit}" if unit else ""), base)
     og += item_list_ld(h1, shown, base)
+    if not include_estimates:
+        og += '<meta name="robots" content="noindex,follow">'
+    intro = ""
+    if "tab" not in request.query_params:
+        intro = f"<section class='home-intro'>{prose.page_body('homepage-intro.md')}</section>"
     return shell(ptitle, desc, canonical,
-                 f'<h1 class="tab-h1">{escape(h1)}</h1><nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}', og)
+                 f'<h1 class="tab-h1">{escape(h1)}</h1>{intro}<nav class="tabs">{tabs}</nav><p class="toggle">{toggle}</p>{grid}', og)
 
 
 @app.get("/submit", response_class=HTMLResponse)
@@ -1618,7 +1630,9 @@ td.act{min-width:180px}td.src{min-width:120px;word-break:break-word}td.src q{col
 .uncounted{color:#555}.positions{font-size:.78em;color:#666;text-align:center;margin-top:2px}.explain{color:#555;font-size:.9em;margin:0 0 20px}.overall{background:#fff;padding:10px 12px;border-radius:8px}
 .site-footer{margin:3em 0 1em;padding:1em 16px 0;border-top:1px solid #ddd;font-size:.85em;color:#666;text-align:center}
 .site-footer a{color:#555}
-@media (max-width:600px){.top{padding:12px 16px}.top nav a{margin-left:14px}main{padding:16px 12px}
+.summary{background:#fff;border:1px solid #eee;border-radius:10px;padding:4px 16px 12px;margin:10px 0 18px}
+.summary h2{margin-top:.8em}
+@media (max-width:600px){.top{padding:12px 16px}main{padding:16px 12px}
 .grid{grid-template-columns:repeat(2,1fr);gap:16px 8px}.avatar{width:96px;height:96px}h1{font-size:1.35em}
 table.cats{font-size:.82em}table.cats td,table.cats th{padding:6px 4px}
 table.entries,table.entries tbody,table.entries tr,table.entries td{display:block;width:100%}
@@ -1669,6 +1683,9 @@ def ui_person(person_id: str, request: Request, include_estimates: bool = True, 
     phrases, top_tab, top_unit, ranked = person_placement(person_id, include_estimates)
     title, desc = person_meta(name, phrases)
     intro = person_intro(name, phrases, top_tab, top_unit, ranked, person_id)
+    summary = prose.summary_section(person_id)
+    if summary:
+        intro = intro.replace("</p>", "</p>" + summary, 1)
     image = _abs_url(base, photo_src(person_id, pr["image_url"])) if pr and pr["image_url"] else None
     inf = INFLUENCE.get("people", {}).get(person_id) or {}
     same = []
@@ -1846,9 +1863,9 @@ def _sitemap_dates():
 @app.get("/sitemap.xml", include_in_schema=False)
 def sitemap_xml(request: Request):
     base = _base(request)
-    paths = [tab_path(t[0]) for t in TABS] + [tab_path("culture", u) for u in culture_unit_keys()]
-    paths += [tab_path("influence", u) for u in INFLUENCE_UNITS if u != INFLUENCE_DEFAULT]
-    paths += [f"/people/{quote(pid)}" for pid in sorted(public_ids())] + ["/about", "/privacy"]
+    paths = ["/"]
+    paths += [f"/people/{quote(pid)}" for pid in sorted(public_ids())]
+    paths += ["/about", "/methodology", "/contact", "/terms", "/privacy"]
     site_day, by_person = _sitemap_dates()
     urls = ""
     for p in dict.fromkeys(paths):
@@ -1947,5 +1964,30 @@ Pageviews API. Influence is neutral, never positive or negative, and is not part
 <li>Outcomes of companies and foundations a person led or funded are credited to them, split by stated shares or evenly among named people.</li>
 </ul>
 <p>Every entry is reviewed before it counts. Anyone can <a href="/submit">submit</a> a claim with sources.</p>
-<p>Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>""",
+<h2>Who runs Output</h2>
+<p>Output is an independent project created and run by <b>Many Malon</b>, a music producer and entrepreneur, through his company <b>MUSICA MALON LLC</b>. It isn't funded or controlled by any of the people, companies or organizations it ranks.</p>
+<p>Many started Output to answer a simple question with evidence instead of opinion: <i>what measurable difference did a famous person actually make?</i> Every number on the site has to clear the sourcing rules above. Each counted entry links to its sources, so you can check it yourself.</p>
+<p>The site may carry ads to cover running costs. Advertisers have no say in rankings, scores or which claims are counted.</p>
+<p>Read <a href="/methodology">how scoring works</a>, see our <a href="/terms">Terms</a>, or <a href="/contact">contact us</a> with corrections and questions.</p>""",
                 desc="How Output ranks famous people: sourcing rules, what counts, estimates and unproven claims.", canonical=_base(request) + "/about")
+
+
+@app.get("/methodology", response_class=HTMLResponse)
+def ui_methodology(request: Request):
+    return page("How we score", prose.page_body("methodology.md"),
+                desc="How Output turns a sourced claim into a score: what counts, sourcing rules, weights and the Overall ranking.",
+                canonical=_base(request) + "/methodology", h1="How Output scores people")
+
+
+@app.get("/contact", response_class=HTMLResponse)
+def ui_contact(request: Request):
+    return page("Contact", prose.page_body("contact.md"),
+                desc="Contact Output, run by Many Malon through MUSICA MALON LLC, about corrections, missing claims and privacy.",
+                canonical=_base(request) + "/contact")
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def ui_terms(request: Request):
+    return page("Terms of Use", prose.page_body("terms.md"),
+                desc="Terms of use for Output at outputrank.com, owned and run by MUSICA MALON LLC.",
+                canonical=_base(request) + "/terms")
